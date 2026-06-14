@@ -6,6 +6,8 @@ require "sinatra/base"
 require_relative "lib/left_wordle/game"
 
 class LeftWordleApi < Sinatra::Base
+  DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
+
   configure do
     set :protection, except: :json_csrf
     set :show_exceptions, false
@@ -25,17 +27,19 @@ class LeftWordleApi < Sinatra::Base
   end
 
   get "/api/game/today" do
-    puzzle = LeftWordle::Game.today
+    date = requested_date(params["date"])
+    puzzle_number = LeftWordle::Game.puzzle_number_for(date)
 
     json_response({
-      puzzle_num: puzzle[:number],
-      date: puzzle[:date].iso8601,
+      puzzle_num: puzzle_number,
+      date: date.iso8601,
       word_length: LeftWordle::Game::WORD_LENGTH
     })
   end
 
   post "/api/game/guess" do
     payload = request_payload
+    date = requested_date(payload["date"])
     guess = payload.fetch("guess", "").to_s.downcase
 
     unless guess.match?(/\A[a-z]{#{LeftWordle::Game::WORD_LENGTH}}\z/o)
@@ -47,14 +51,16 @@ class LeftWordleApi < Sinatra::Base
     end
 
     row_index = row_index_from(payload)
-    puzzle = LeftWordle::Game.today
-    answer = LeftWordle::Game.answer_for(puzzle[:number])
+    puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+    answer = LeftWordle::Game.answer_for(puzzle_number)
     evaluation = LeftWordle::Game.evaluate(guess, answer)
     game_status = game_status_for(evaluation, row_index)
 
     json_response({
+      date: date.iso8601,
       evaluation: evaluation,
       game_status: game_status,
+      puzzle_num: puzzle_number,
       row_index: row_index + 1,
       solution: (answer if game_status != "IN_PROGRESS")
     })
@@ -104,7 +110,24 @@ class LeftWordleApi < Sinatra::Base
       body = request.body.read
       return {} if body.empty?
 
-      JSON.parse(body)
+      payload = JSON.parse(body)
+      halt_json(:bad_request, "Request body must be a JSON object") unless payload.is_a?(Hash)
+
+      payload
+    end
+
+    def requested_date(value)
+      halt_json(:bad_request, "Date is required") if value.nil?
+      halt_json(:bad_request, "Date must use YYYY-MM-DD format") unless value.is_a?(String) && value.match?(DATE_PATTERN)
+
+      date = Date.iso8601(value)
+      latest_date = LeftWordle::Game.latest_available_date
+
+      halt_json(:bad_request, "Date cannot be later than #{latest_date.iso8601}") if date > latest_date
+
+      date
+    rescue Date::Error
+      halt_json(:bad_request, "Date must be a valid calendar date")
     end
 
     def row_index_from(payload)

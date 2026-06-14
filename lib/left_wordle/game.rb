@@ -9,6 +9,7 @@ module LeftWordle
   module Game
     ABSENT = "absent"
     CORRECT = "correct"
+    MAX_UTC_OFFSET = "+14:00"
     MAX_GUESSES = 6
     PRESENT = "present"
     PUZZLE_EPOCH = Date.new(2021, 6, 19)
@@ -52,12 +53,12 @@ module LeftWordle
       result
     end
 
-    def puzzle_number_for(date)
-      (date - PUZZLE_EPOCH).to_i
+    def latest_available_date(time: Time.now)
+      time.getlocal(MAX_UTC_OFFSET).to_date
     end
 
-    def today(date: Date.today)
-      {date: date, number: puzzle_number_for(date)}
+    def puzzle_number_for(date)
+      (date - PUZZLE_EPOCH).to_i
     end
 
     def valid_guess?(word)

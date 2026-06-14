@@ -13,12 +13,42 @@ class AppTest < Minitest::Test
     assert_equal "no-store", last_response.headers.fetch("cache-control")
   end
 
-  def test_get_today
+  def test_get_today_rejects_a_date_that_has_not_started_in_utc_plus_fourteen
+    future_date = LeftWordle::Game.latest_available_date + 1
+
+    get "/api/game/today", date: future_date.iso8601
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot be later/, json_response.fetch("detail"))
+  end
+
+  def test_get_today_rejects_a_non_iso_date
+    get "/api/game/today", date: "2021-6-19"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date must use YYYY-MM-DD format", json_response.fetch("detail")
+  end
+
+  def test_get_today_rejects_an_invalid_calendar_date
+    get "/api/game/today", date: "2026-02-30"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date must be a valid calendar date", json_response.fetch("detail")
+  end
+
+  def test_get_today_requires_a_date
     get "/api/game/today"
 
+    assert_equal 400, last_response.status
+    assert_equal "Date is required", json_response.fetch("detail")
+  end
+
+  def test_get_today_returns_the_requested_past_puzzle
+    get "/api/game/today", date: "2021-06-19"
+
     assert last_response.ok?
-    assert_kind_of Integer, json_response.fetch("puzzle_num")
-    assert_match(/\A\d{4}-\d{2}-\d{2}\z/, json_response.fetch("date"))
+    assert_equal 0, json_response.fetch("puzzle_num")
+    assert_equal "2021-06-19", json_response.fetch("date")
     assert_equal 5, json_response.fetch("word_length")
   end
 
@@ -37,48 +67,69 @@ class AppTest < Minitest::Test
   end
 
   def test_post_guess_rejects_invalid_row_index
-    answer = today_answer
+    date = "2021-06-19"
+    answer = answer_for(date)
 
-    post_json "/api/game/guess", {guess: answer, row_index: 6}
+    post_json "/api/game/guess", {date: date, guess: answer, row_index: 6}
 
     assert_equal 400, last_response.status
     assert_match(/Row index/, json_response.fetch("detail"))
   end
 
+  def test_post_guess_rejects_json_that_is_not_an_object
+    post "/api/game/guess", "[]", {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 400, last_response.status
+    assert_equal "Request body must be a JSON object", json_response.fetch("detail")
+  end
+
   def test_post_guess_rejects_unknown_word
-    post_json "/api/game/guess", {guess: "zxqvw", row_index: 0}
+    post_json "/api/game/guess", {date: "2021-06-19", guess: "zxqvw", row_index: 0}
 
     assert_equal 400, last_response.status
     assert_equal "Not in word list", json_response.fetch("detail")
   end
 
+  def test_post_guess_requires_a_date
+    post_json "/api/game/guess", {guess: "cigar", row_index: 0}
+
+    assert_equal 400, last_response.status
+    assert_equal "Date is required", json_response.fetch("detail")
+  end
+
   def test_post_guess_returns_fail_and_solution_on_last_row
-    answer = today_answer
+    date = "2021-06-19"
+    answer = answer_for(date)
     wrong_guess = WordData::AnswerList::WORDS.find { |word| word != answer }
 
-    post_json "/api/game/guess", {guess: wrong_guess, row_index: 5}
+    post_json "/api/game/guess", {date: date, guess: wrong_guess, row_index: 5}
 
     assert last_response.ok?
+    assert_equal date, json_response.fetch("date")
     assert_equal "FAIL", json_response.fetch("game_status")
+    assert_equal 0, json_response.fetch("puzzle_num")
     assert_equal answer, json_response.fetch("solution")
   end
 
-  def test_post_guess_returns_win_and_solution
-    answer = today_answer
+  def test_post_guess_returns_win_and_solution_for_the_requested_date
+    date = "2021-06-20"
+    answer = answer_for(date)
 
-    post_json "/api/game/guess", {guess: answer, row_index: 0}
+    post_json "/api/game/guess", {date: date, guess: answer, row_index: 0}
 
     assert last_response.ok?
+    assert_equal date, json_response.fetch("date")
     assert_equal ["correct"] * 5, json_response.fetch("evaluation")
     assert_equal "WIN", json_response.fetch("game_status")
+    assert_equal 1, json_response.fetch("puzzle_num")
     assert_equal 1, json_response.fetch("row_index")
     assert_equal answer, json_response.fetch("solution")
   end
 
   private
 
-  def today_answer
-    puzzle = LeftWordle::Game.today
-    LeftWordle::Game.answer_for(puzzle[:number])
+  def answer_for(date)
+    puzzle_number = LeftWordle::Game.puzzle_number_for(Date.iso8601(date))
+    LeftWordle::Game.answer_for(puzzle_number)
   end
 end

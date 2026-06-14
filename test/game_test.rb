@@ -20,6 +20,11 @@ class GameTest < Minitest::Test
     assert_equal [LeftWordle::Game::CORRECT] * 5, LeftWordle::Game.evaluate("crane", "crane")
   end
 
+  def test_latest_available_date_uses_utc_plus_fourteen
+    assert_equal Date.new(2026, 6, 14), LeftWordle::Game.latest_available_date(time: Time.utc(2026, 6, 14, 9, 59))
+    assert_equal Date.new(2026, 6, 15), LeftWordle::Game.latest_available_date(time: Time.utc(2026, 6, 14, 10, 0))
+  end
+
   def test_puzzle_number_uses_the_original_epoch
     assert_equal 0, LeftWordle::Game.puzzle_number_for(Date.new(2021, 6, 19))
     assert_equal 1, LeftWordle::Game.puzzle_number_for(Date.new(2021, 6, 20))

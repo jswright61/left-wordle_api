@@ -21,14 +21,19 @@ Returns a basic availability response.
 
 ### `GET /api/game/today`
 
-Returns the current puzzle number, local server date, and word length.
+Returns the puzzle number and word length for the requested date:
+
+```text
+GET /api/game/today?date=2021-06-19
+```
 
 ### `POST /api/game/guess`
 
-Evaluates a guess for today's puzzle. The request body is:
+Evaluates a guess for the requested puzzle date. The request body is:
 
 ```json
 {
+  "date": "2021-06-19",
   "guess": "crane",
   "row_index": 0
 }
@@ -36,6 +41,11 @@ Evaluates a guess for today's puzzle. The request body is:
 
 `row_index` is zero-based. The solution is returned only when the guess wins or
 the sixth guess fails.
+
+Dates must use `YYYY-MM-DD`. Past dates are allowed. The latest accepted date is
+the current date at UTC+14, which is the furthest-ahead civil time zone. This
+allows the new puzzle as soon as that calendar date begins anywhere in the
+world, while rejecting dates that are still in the future everywhere.
 
 ## Configuration
 
