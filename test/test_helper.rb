@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 ENV["RACK_ENV"] = "test"
+ENV["CORS_ORIGINS"] = "https://left-wordle.example, https://alternate.example"
 
 require "minitest/autorun"
 require "rack/test"

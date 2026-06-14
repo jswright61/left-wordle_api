@@ -49,8 +49,18 @@ world, while rejecting dates that are still in the future everywhere.
 
 ## Configuration
 
-`CORS_ORIGIN` controls the value of `Access-Control-Allow-Origin`. It defaults
-to `*` because the initial API is public and stateless.
+`CORS_ORIGINS` is a comma-separated list of exact browser origins allowed to
+call the API:
+
+```zsh
+CORS_ORIGINS=https://left-wordle.example.com,https://alternate.example.com
+```
+
+No browser origins are allowed by default. Requests from an origin outside the
+list receive `403 Forbidden`. Include the public site's own origin because
+browsers may send it on same-origin requests. Requests without an `Origin`
+header remain available for server-to-server clients; CORS is not an
+authentication mechanism for those clients.
 
 ## Checks
 

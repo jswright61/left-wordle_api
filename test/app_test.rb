@@ -52,11 +52,26 @@ class AppTest < Minitest::Test
     assert_equal 5, json_response.fetch("word_length")
   end
 
-  def test_options_returns_cors_headers
-    options "/api/game/guess"
+  def test_options_echoes_an_allowed_origin
+    options "/api/game/guess", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
 
     assert_equal 204, last_response.status
-    assert_equal "*", last_response.headers.fetch("access-control-allow-origin")
+    assert_equal "https://left-wordle.example", last_response.headers.fetch("access-control-allow-origin")
+    assert_equal "Origin", last_response.headers.fetch("vary")
+  end
+
+  def test_request_rejects_an_unapproved_origin
+    get "/api/health", {}, {"HTTP_ORIGIN" => "https://unrelated.example"}
+
+    assert_equal 403, last_response.status
+    assert_equal "Origin not allowed", json_response.fetch("detail")
+  end
+
+  def test_request_without_an_origin_is_allowed
+    get "/api/health"
+
+    assert last_response.ok?
+    refute last_response.headers.key?("access-control-allow-origin")
   end
 
   def test_post_guess_rejects_invalid_json

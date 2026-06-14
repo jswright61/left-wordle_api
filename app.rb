@@ -9,12 +9,14 @@ class LeftWordleApi < Sinatra::Base
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
 
   configure do
+    set :allowed_origins, ENV.fetch("CORS_ORIGINS", "").split(",").map(&:strip).reject(&:empty?).freeze
     set :protection, except: :json_csrf
     set :show_exceptions, false
   end
 
   before do
     content_type :json
+    validate_request_origin!
     headers cors_headers.merge("Cache-Control" => "no-store")
   end
 
@@ -80,11 +82,15 @@ class LeftWordleApi < Sinatra::Base
 
   helpers do
     def cors_headers
-      {
+      origin = request.env["HTTP_ORIGIN"]
+      headers = {
         "Access-Control-Allow-Headers" => "Content-Type",
         "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
-        "Access-Control-Allow-Origin" => ENV.fetch("CORS_ORIGIN", "*")
+        "Vary" => "Origin"
       }
+
+      headers["Access-Control-Allow-Origin"] = origin if settings.allowed_origins.include?(origin)
+      headers
     end
 
     def game_status_for(evaluation, row_index)
@@ -137,6 +143,13 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "Row index must be between 0 and #{LeftWordle::Game::MAX_GUESSES - 1}")
     rescue ArgumentError, TypeError
       halt_json(:bad_request, "Row index must be an integer")
+    end
+
+    def validate_request_origin!
+      origin = request.env["HTTP_ORIGIN"]
+      return if origin.nil? || settings.allowed_origins.include?(origin)
+
+      halt_json(:forbidden, "Origin not allowed")
     end
   end
 end
