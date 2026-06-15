@@ -38,6 +38,20 @@ Create an immutable tag for the reference branch:
 git tag -a archive/ruby-backend-2026-06-15 ruby-backend
 ```
 
+The `port-to-python` branch should also be considered archived. It is an
+ancestor of `ruby-backend`, so all four of its unique commits are already
+preserved by the `archive/ruby-backend-2026-06-15` tag. A separate archive tag
+is optional and useful only if the Python-port milestone deserves a convenient
+name:
+
+```zsh
+git tag -a archive/port-to-python-2026-06-15 port-to-python
+```
+
+After the archive tag and branches have been pushed and verified, the movable
+`port-to-python` branch can be deleted without losing its history. Do not delete
+the branch until the remote backup has been confirmed.
+
 Push the tag and all branches after configuring a remote. An optional worktree
 can keep the reference implementation available beside the active frontend:
 
@@ -103,9 +117,19 @@ failure may temporarily use an explicitly enabled local fallback.
 
 ### 1. Stabilize Local Storage
 
-Port the `StorageController` concept from `ruby-backend` independently of API
-integration. It centralizes local storage access and provides a natural place
-for schema migrations, validation, and compatibility behavior.
+Port `src/storage-controller.js` from the archived `ruby-backend` branch,
+independently of API integration. Use the version at commit `a5db496` through
+the `archive/ruby-backend-2026-06-15` tag or the
+`python_wordle-ruby-reference` worktree. It centralizes local storage access and
+provides a natural place for schema migrations, validation, and compatibility
+behavior.
+
+The controller was introduced by commit `33bc60a` on the `port-to-python`
+line. The `ruby-backend` version is the newer source: commit `7fa05ad` added the
+`suppressLoginPrompt` preference needed by optional login. The files are
+otherwise currently identical. Start from the `ruby-backend` version, then
+review every allowed key and migration against the frontend behavior that will
+actually ship rather than copying it without adaptation.
 
 This stage should preserve all existing storage keys and values unless a
 specific migration is tested. It can be deployed while gameplay remains fully
