@@ -15,19 +15,19 @@ The API listens on `http://localhost:9292` by default.
 
 ## Endpoints
 
-### `GET /api/health`
+### `GET /api/v1/health`
 
 Returns a basic availability response.
 
-### `GET /api/game/today`
+### `GET /api/v1/game/puzzle`
 
 Returns the puzzle number and word length for the requested date:
 
 ```text
-GET /api/game/today?date=2021-06-19
+GET /api/v1/game/puzzle?date=2021-06-19
 ```
 
-### `POST /api/game/guess`
+### `POST /api/v1/game/guess`
 
 Evaluates a guess for the requested puzzle date. The request body is:
 
@@ -46,6 +46,11 @@ Dates must use `YYYY-MM-DD`. Past dates are allowed. The latest accepted date is
 the current date at UTC+14, which is the furthest-ahead civil time zone. This
 allows the new puzzle as soon as that calendar date begins anywhere in the
 world, while rejecting dates that are still in the future everywhere.
+
+The original `/api/health`, `/api/game/today`, and `/api/game/guess` routes
+remain available during the frontend transition. They return `Deprecation` and
+`Link` headers identifying the corresponding versioned endpoint and will be
+removed after all known clients have migrated.
 
 ## Configuration
 

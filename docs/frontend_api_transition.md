@@ -319,10 +319,10 @@ boundaries that no longer apply.
 `left_wordle_api` owns the API contract. Document endpoints and behavior in
 this repository and enforce them with request tests.
 
-Version the contract before it gains several consumers. A possible structure
-is:
+The canonical versioned contract is:
 
 ```text
+/api/v1/health
 /api/v1/game/puzzle
 /api/v1/game/guess
 /api/v1/auth/...
@@ -330,9 +330,10 @@ is:
 /api/v1/history/...
 ```
 
-The current unversioned endpoints can remain temporarily as aliases during the
-frontend transition. Set a removal milestone rather than maintaining both
-indefinitely.
+The current unversioned endpoints remain temporarily as aliases during the
+frontend transition and advertise their replacements through `Deprecation` and
+`Link` response headers. Remove them after all known clients have migrated and
+the versioned routes have operated reliably in production.
 
 Contract documentation should define:
 

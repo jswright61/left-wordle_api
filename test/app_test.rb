@@ -11,6 +11,16 @@ class AppTest < Minitest::Test
     assert last_response.ok?
     assert_equal({"status" => "ok"}, json_response)
     assert_equal "no-store", last_response.headers.fetch("cache-control")
+    assert_equal "true", last_response.headers.fetch("deprecation")
+    assert_equal "</api/v1/health>; rel=\"successor-version\"", last_response.headers.fetch("link")
+  end
+
+  def test_get_versioned_health
+    get "/api/v1/health"
+
+    assert last_response.ok?
+    assert_equal({"status" => "ok"}, json_response)
+    refute last_response.headers.key?("deprecation")
   end
 
   def test_get_today_rejects_a_date_that_has_not_started_in_utc_plus_fourteen
@@ -50,10 +60,22 @@ class AppTest < Minitest::Test
     assert_equal 0, json_response.fetch("puzzle_num")
     assert_equal "2021-06-19", json_response.fetch("date")
     assert_equal 5, json_response.fetch("word_length")
+    assert_equal "true", last_response.headers.fetch("deprecation")
+    assert_equal "</api/v1/game/puzzle>; rel=\"successor-version\"", last_response.headers.fetch("link")
+  end
+
+  def test_get_versioned_puzzle_returns_the_requested_past_puzzle
+    get "/api/v1/game/puzzle", date: "2021-06-19"
+
+    assert last_response.ok?
+    assert_equal 0, json_response.fetch("puzzle_num")
+    assert_equal "2021-06-19", json_response.fetch("date")
+    assert_equal 5, json_response.fetch("word_length")
+    refute last_response.headers.key?("deprecation")
   end
 
   def test_options_echoes_an_allowed_origin
-    options "/api/game/guess", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
+    options "/api/v1/game/guess", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
 
     assert_equal 204, last_response.status
     assert_equal "https://left-wordle.example", last_response.headers.fetch("access-control-allow-origin")
@@ -139,6 +161,24 @@ class AppTest < Minitest::Test
     assert_equal 1, json_response.fetch("puzzle_num")
     assert_equal 1, json_response.fetch("row_index")
     assert_equal answer, json_response.fetch("solution")
+    assert_equal "true", last_response.headers.fetch("deprecation")
+    assert_equal "</api/v1/game/guess>; rel=\"successor-version\"", last_response.headers.fetch("link")
+  end
+
+  def test_post_versioned_guess_returns_win_and_solution_for_the_requested_date
+    date = "2021-06-20"
+    answer = answer_for(date)
+
+    post_json "/api/v1/game/guess", {date: date, guess: answer, row_index: 0}
+
+    assert last_response.ok?
+    assert_equal date, json_response.fetch("date")
+    assert_equal ["correct"] * 5, json_response.fetch("evaluation")
+    assert_equal "WIN", json_response.fetch("game_status")
+    assert_equal 1, json_response.fetch("puzzle_num")
+    assert_equal 1, json_response.fetch("row_index")
+    assert_equal answer, json_response.fetch("solution")
+    refute last_response.headers.key?("deprecation")
   end
 
   private

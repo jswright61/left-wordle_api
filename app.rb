@@ -25,47 +25,30 @@ class LeftWordleApi < Sinatra::Base
   end
 
   get "/api/health" do
-    json_response({status: "ok"})
+    mark_deprecated!("/api/v1/health")
+    health_response
   end
 
   get "/api/game/today" do
-    date = requested_date(params["date"])
-    puzzle_number = LeftWordle::Game.puzzle_number_for(date)
-
-    json_response({
-      puzzle_num: puzzle_number,
-      date: date.iso8601,
-      word_length: LeftWordle::Game::WORD_LENGTH
-    })
+    mark_deprecated!("/api/v1/game/puzzle")
+    puzzle_response
   end
 
   post "/api/game/guess" do
-    payload = request_payload
-    date = requested_date(payload["date"])
-    guess = payload.fetch("guess", "").to_s.downcase
+    mark_deprecated!("/api/v1/game/guess")
+    guess_response
+  end
 
-    unless guess.match?(/\A[a-z]{#{LeftWordle::Game::WORD_LENGTH}}\z/o)
-      halt_json(:bad_request, "Guess must be #{LeftWordle::Game::WORD_LENGTH} letters")
-    end
+  get "/api/v1/health" do
+    health_response
+  end
 
-    unless LeftWordle::Game.valid_guess?(guess)
-      halt_json(:bad_request, "Not in word list")
-    end
+  get "/api/v1/game/puzzle" do
+    puzzle_response
+  end
 
-    row_index = row_index_from(payload)
-    puzzle_number = LeftWordle::Game.puzzle_number_for(date)
-    answer = LeftWordle::Game.answer_for(puzzle_number)
-    evaluation = LeftWordle::Game.evaluate(guess, answer)
-    game_status = game_status_for(evaluation, row_index)
-
-    json_response({
-      date: date.iso8601,
-      evaluation: evaluation,
-      game_status: game_status,
-      puzzle_num: puzzle_number,
-      row_index: row_index + 1,
-      solution: (answer if game_status != "IN_PROGRESS")
-    })
+  post "/api/v1/game/guess" do
+    guess_response
   end
 
   not_found do
@@ -103,13 +86,64 @@ class LeftWordleApi < Sinatra::Base
       end
     end
 
+    def guess_response
+      payload = request_payload
+      date = requested_date(payload["date"])
+      guess = payload.fetch("guess", "").to_s.downcase
+
+      unless guess.match?(/\A[a-z]{#{LeftWordle::Game::WORD_LENGTH}}\z/o)
+        halt_json(:bad_request, "Guess must be #{LeftWordle::Game::WORD_LENGTH} letters")
+      end
+
+      unless LeftWordle::Game.valid_guess?(guess)
+        halt_json(:bad_request, "Not in word list")
+      end
+
+      row_index = row_index_from(payload)
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+      answer = LeftWordle::Game.answer_for(puzzle_number)
+      evaluation = LeftWordle::Game.evaluate(guess, answer)
+      game_status = game_status_for(evaluation, row_index)
+
+      json_response({
+        date: date.iso8601,
+        evaluation: evaluation,
+        game_status: game_status,
+        puzzle_num: puzzle_number,
+        row_index: row_index + 1,
+        solution: (answer if game_status != "IN_PROGRESS")
+      })
+    end
+
     def halt_json(status, message)
       halt Rack::Utils.status_code(status), JSON.generate(detail: message)
+    end
+
+    def health_response
+      json_response({status: "ok"})
     end
 
     def json_response(payload, status: :ok)
       status(status)
       JSON.generate(payload)
+    end
+
+    def mark_deprecated!(successor_path)
+      headers(
+        "Deprecation" => "true",
+        "Link" => %(<#{successor_path}>; rel="successor-version")
+      )
+    end
+
+    def puzzle_response
+      date = requested_date(params["date"])
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+
+      json_response({
+        puzzle_num: puzzle_number,
+        date: date.iso8601,
+        word_length: LeftWordle::Game::WORD_LENGTH
+      })
     end
 
     def request_payload
