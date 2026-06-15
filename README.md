@@ -47,11 +47,6 @@ the current date at UTC+14, which is the furthest-ahead civil time zone. This
 allows the new puzzle as soon as that calendar date begins anywhere in the
 world, while rejecting dates that are still in the future everywhere.
 
-The original `/api/health`, `/api/game/today`, and `/api/game/guess` routes
-remain available during the frontend transition. They return `Deprecation` and
-`Link` headers identifying the corresponding versioned endpoint and will be
-removed after all known clients have migrated.
-
 ## Configuration
 
 `CORS_ORIGINS` is a comma-separated list of exact browser origins allowed to

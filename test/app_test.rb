@@ -6,72 +6,50 @@ class AppTest < Minitest::Test
   include ApiTest
 
   def test_get_health
-    get "/api/health"
-
-    assert last_response.ok?
-    assert_equal({"status" => "ok"}, json_response)
-    assert_equal "no-store", last_response.headers.fetch("cache-control")
-    assert_equal "true", last_response.headers.fetch("deprecation")
-    assert_equal "</api/v1/health>; rel=\"successor-version\"", last_response.headers.fetch("link")
-  end
-
-  def test_get_versioned_health
     get "/api/v1/health"
 
     assert last_response.ok?
     assert_equal({"status" => "ok"}, json_response)
-    refute last_response.headers.key?("deprecation")
+    assert_equal "no-store", last_response.headers.fetch("cache-control")
   end
 
-  def test_get_today_rejects_a_date_that_has_not_started_in_utc_plus_fourteen
+  def test_get_puzzle_rejects_a_date_that_has_not_started_in_utc_plus_fourteen
     future_date = LeftWordle::Game.latest_available_date + 1
 
-    get "/api/game/today", date: future_date.iso8601
+    get "/api/v1/game/puzzle", date: future_date.iso8601
 
     assert_equal 400, last_response.status
     assert_match(/cannot be later/, json_response.fetch("detail"))
   end
 
-  def test_get_today_rejects_a_non_iso_date
-    get "/api/game/today", date: "2021-6-19"
+  def test_get_puzzle_rejects_a_non_iso_date
+    get "/api/v1/game/puzzle", date: "2021-6-19"
 
     assert_equal 400, last_response.status
     assert_equal "Date must use YYYY-MM-DD format", json_response.fetch("detail")
   end
 
-  def test_get_today_rejects_an_invalid_calendar_date
-    get "/api/game/today", date: "2026-02-30"
+  def test_get_puzzle_rejects_an_invalid_calendar_date
+    get "/api/v1/game/puzzle", date: "2026-02-30"
 
     assert_equal 400, last_response.status
     assert_equal "Date must be a valid calendar date", json_response.fetch("detail")
   end
 
-  def test_get_today_requires_a_date
-    get "/api/game/today"
+  def test_get_puzzle_requires_a_date
+    get "/api/v1/game/puzzle"
 
     assert_equal 400, last_response.status
     assert_equal "Date is required", json_response.fetch("detail")
   end
 
-  def test_get_today_returns_the_requested_past_puzzle
-    get "/api/game/today", date: "2021-06-19"
-
-    assert last_response.ok?
-    assert_equal 0, json_response.fetch("puzzle_num")
-    assert_equal "2021-06-19", json_response.fetch("date")
-    assert_equal 5, json_response.fetch("word_length")
-    assert_equal "true", last_response.headers.fetch("deprecation")
-    assert_equal "</api/v1/game/puzzle>; rel=\"successor-version\"", last_response.headers.fetch("link")
-  end
-
-  def test_get_versioned_puzzle_returns_the_requested_past_puzzle
+  def test_get_puzzle_returns_the_requested_past_puzzle
     get "/api/v1/game/puzzle", date: "2021-06-19"
 
     assert last_response.ok?
     assert_equal 0, json_response.fetch("puzzle_num")
     assert_equal "2021-06-19", json_response.fetch("date")
     assert_equal 5, json_response.fetch("word_length")
-    refute last_response.headers.key?("deprecation")
   end
 
   def test_options_echoes_an_allowed_origin
@@ -83,21 +61,21 @@ class AppTest < Minitest::Test
   end
 
   def test_request_rejects_an_unapproved_origin
-    get "/api/health", {}, {"HTTP_ORIGIN" => "https://unrelated.example"}
+    get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://unrelated.example"}
 
     assert_equal 403, last_response.status
     assert_equal "Origin not allowed", json_response.fetch("detail")
   end
 
   def test_request_without_an_origin_is_allowed
-    get "/api/health"
+    get "/api/v1/health"
 
     assert last_response.ok?
     refute last_response.headers.key?("access-control-allow-origin")
   end
 
   def test_post_guess_rejects_invalid_json
-    post "/api/game/guess", "{", {"CONTENT_TYPE" => "application/json"}
+    post "/api/v1/game/guess", "{", {"CONTENT_TYPE" => "application/json"}
 
     assert_equal 400, last_response.status
     assert_equal "Request body must be valid JSON", json_response.fetch("detail")
@@ -107,28 +85,28 @@ class AppTest < Minitest::Test
     date = "2021-06-19"
     answer = answer_for(date)
 
-    post_json "/api/game/guess", {date: date, guess: answer, row_index: 6}
+    post_json "/api/v1/game/guess", {date: date, guess: answer, row_index: 6}
 
     assert_equal 400, last_response.status
     assert_match(/Row index/, json_response.fetch("detail"))
   end
 
   def test_post_guess_rejects_json_that_is_not_an_object
-    post "/api/game/guess", "[]", {"CONTENT_TYPE" => "application/json"}
+    post "/api/v1/game/guess", "[]", {"CONTENT_TYPE" => "application/json"}
 
     assert_equal 400, last_response.status
     assert_equal "Request body must be a JSON object", json_response.fetch("detail")
   end
 
   def test_post_guess_rejects_unknown_word
-    post_json "/api/game/guess", {date: "2021-06-19", guess: "zxqvw", row_index: 0}
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "zxqvw", row_index: 0}
 
     assert_equal 400, last_response.status
     assert_equal "Not in word list", json_response.fetch("detail")
   end
 
   def test_post_guess_requires_a_date
-    post_json "/api/game/guess", {guess: "cigar", row_index: 0}
+    post_json "/api/v1/game/guess", {guess: "cigar", row_index: 0}
 
     assert_equal 400, last_response.status
     assert_equal "Date is required", json_response.fetch("detail")
@@ -139,7 +117,7 @@ class AppTest < Minitest::Test
     answer = answer_for(date)
     wrong_guess = WordData::AnswerList::WORDS.find { |word| word != answer }
 
-    post_json "/api/game/guess", {date: date, guess: wrong_guess, row_index: 5}
+    post_json "/api/v1/game/guess", {date: date, guess: wrong_guess, row_index: 5}
 
     assert last_response.ok?
     assert_equal date, json_response.fetch("date")
@@ -152,23 +130,6 @@ class AppTest < Minitest::Test
     date = "2021-06-20"
     answer = answer_for(date)
 
-    post_json "/api/game/guess", {date: date, guess: answer, row_index: 0}
-
-    assert last_response.ok?
-    assert_equal date, json_response.fetch("date")
-    assert_equal ["correct"] * 5, json_response.fetch("evaluation")
-    assert_equal "WIN", json_response.fetch("game_status")
-    assert_equal 1, json_response.fetch("puzzle_num")
-    assert_equal 1, json_response.fetch("row_index")
-    assert_equal answer, json_response.fetch("solution")
-    assert_equal "true", last_response.headers.fetch("deprecation")
-    assert_equal "</api/v1/game/guess>; rel=\"successor-version\"", last_response.headers.fetch("link")
-  end
-
-  def test_post_versioned_guess_returns_win_and_solution_for_the_requested_date
-    date = "2021-06-20"
-    answer = answer_for(date)
-
     post_json "/api/v1/game/guess", {date: date, guess: answer, row_index: 0}
 
     assert last_response.ok?
@@ -178,7 +139,17 @@ class AppTest < Minitest::Test
     assert_equal 1, json_response.fetch("puzzle_num")
     assert_equal 1, json_response.fetch("row_index")
     assert_equal answer, json_response.fetch("solution")
-    refute last_response.headers.key?("deprecation")
+  end
+
+  def test_unversioned_routes_are_not_available
+    get "/api/health"
+    assert_equal 404, last_response.status
+
+    get "/api/game/today", date: "2021-06-19"
+    assert_equal 404, last_response.status
+
+    post_json "/api/game/guess", {date: "2021-06-19", guess: "cigar", row_index: 0}
+    assert_equal 404, last_response.status
   end
 
   private

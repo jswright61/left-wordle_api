@@ -24,21 +24,6 @@ class LeftWordleApi < Sinatra::Base
     status :no_content
   end
 
-  get "/api/health" do
-    mark_deprecated!("/api/v1/health")
-    health_response
-  end
-
-  get "/api/game/today" do
-    mark_deprecated!("/api/v1/game/puzzle")
-    puzzle_response
-  end
-
-  post "/api/game/guess" do
-    mark_deprecated!("/api/v1/game/guess")
-    guess_response
-  end
-
   get "/api/v1/health" do
     health_response
   end
@@ -126,13 +111,6 @@ class LeftWordleApi < Sinatra::Base
     def json_response(payload, status: :ok)
       status(status)
       JSON.generate(payload)
-    end
-
-    def mark_deprecated!(successor_path)
-      headers(
-        "Deprecation" => "true",
-        "Link" => %(<#{successor_path}>; rel="successor-version")
-      )
     end
 
     def puzzle_response

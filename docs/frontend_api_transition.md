@@ -330,10 +330,9 @@ The canonical versioned contract is:
 /api/v1/history/...
 ```
 
-The current unversioned endpoints remain temporarily as aliases during the
-frontend transition and advertise their replacements through `Deprecation` and
-`Link` response headers. Remove them after all known clients have migrated and
-the versioned routes have operated reliably in production.
+Only versioned endpoints are exposed. The API and frontend were migrated before
+either application was deployed, so unversioned compatibility aliases were not
+retained.
 
 Contract documentation should define:
 
