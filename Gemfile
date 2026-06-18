@@ -18,3 +18,8 @@ gem "standard", "~> 1.50", require: false
 
 gem "rackup", "~> 2.3"
 gem "puma", "~> 8.0"
+
+group :development do
+  gem "capistrano", "~> 3.19", require: false
+  gem "capistrano-bundler", "~> 2.1", require: false
+end

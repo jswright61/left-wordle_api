@@ -1,0 +1,24 @@
+# Left Wordle API — Caddy reverse proxy configuration
+# Place this file at /etc/caddy/Caddyfile on paula-poundstone
+# (or include it via: import /home/deploy/left_wordle_api/Caddyfile)
+#
+# Replace the hostnames below with your actual domains.
+# Caddy obtains TLS certificates from Let's Encrypt automatically.
+
+# Production
+api.left-wordle.com {
+    reverse_proxy unix//home/deploy/left_wordle_api/shared/tmp/sockets/puma.sock
+
+    log {
+        output file /var/log/caddy/left-wordle-api.log
+    }
+}
+
+# Staging
+staging.api.left-wordle.com.com {
+    reverse_proxy unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
+
+    log {
+        output file /var/log/caddy/left-wordle-api-staging.log
+    }
+}
