@@ -146,7 +146,7 @@ class AppTest < Minitest::Test
     assert_equal ["correct"] * 5, json_response.fetch("evaluation")
     assert_equal "WIN", json_response.fetch("game_status")
     assert_equal 1, json_response.fetch("puzzle_num")
-    assert_equal 1, json_response.fetch("row_index")
+    assert_equal 1, json_response.fetch("guess_number")
     assert_equal answer, json_response.fetch("solution")
   end
 

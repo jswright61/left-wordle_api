@@ -108,7 +108,7 @@ Evaluates a guess against the puzzle answer for a given date.
   "evaluation": ["absent", "present", "correct", "absent", "absent"],
   "game_status": "IN_PROGRESS",
   "puzzle_num": 0,
-  "row_index": 1,
+  "guess_number": 1,
   "solution": null
 }
 ```
@@ -119,7 +119,7 @@ Evaluates a guess against the puzzle answer for a given date.
 | `evaluation` | array of strings | Per-letter result; one entry per letter (see below) |
 | `game_status` | string | Current game state (see below) |
 | `puzzle_num` | integer | Days since puzzle epoch |
-| `row_index` | integer | The client-supplied `row_index` incremented by 1 |
+| `guess_number` | integer | The ordinal guess number (1–6); 1 = first guess |
 | `solution` | string or null | The answer word; only revealed on `WIN` or `FAIL`, otherwise `null` |
 
 **Evaluation values**

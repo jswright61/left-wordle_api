@@ -99,7 +99,7 @@ class LeftWordleApi < Sinatra::Base
         evaluation: evaluation,
         game_status: game_status,
         puzzle_num: puzzle_number,
-        row_index: row_index + 1,
+        guess_number: row_index + 1,
         solution: (answer if game_status != "IN_PROGRESS")
       })
     end
