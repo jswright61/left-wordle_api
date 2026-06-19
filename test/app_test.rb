@@ -13,6 +13,15 @@ class AppTest < Minitest::Test
     assert_equal "no-store", last_response.headers.fetch("cache-control")
   end
 
+  def test_get_version
+    get "/api/v1/version"
+
+    assert last_response.ok?
+    body = json_response
+    assert body.key?("commit")
+    assert body.key?("release")
+  end
+
   def test_get_puzzle_rejects_a_date_that_has_not_started_in_utc_plus_fourteen
     future_date = LeftWordle::Game.latest_available_date + 1
 

@@ -18,7 +18,7 @@ Environment=DEPLOY_TO=/home/deploy/staging_left_wordle_api
 Environment=CORS_ORIGINS=https://staging.left-wordle.com
 
 WorkingDirectory=/home/deploy/staging_left_wordle_api/current
-ExecStart=bundle exec puma -C config/puma.rb
+ExecStart=/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin/bundle exec puma -C config/puma.rb
 ExecReload=/bin/kill -USR2 $MAINPID
 KillMode=mixed
 TimeoutStopSec=30

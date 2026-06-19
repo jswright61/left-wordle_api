@@ -28,6 +28,10 @@ class LeftWordleApi < Sinatra::Base
     health_response
   end
 
+  get "/api/v1/version" do
+    version_response
+  end
+
   get "/api/v1/game/puzzle" do
     puzzle_response
   end
@@ -106,6 +110,16 @@ class LeftWordleApi < Sinatra::Base
 
     def health_response
       json_response({status: "ok"})
+    end
+
+    def version_response
+      revision_file = File.join(__dir__, "REVISION")
+      revisions_log = File.join(__dir__, "..", "revisions.log")
+
+      commit = File.exist?(revision_file) ? File.read(revision_file).strip[0, 8] : nil
+      release = File.exist?(revisions_log) ? File.readlines(revisions_log).count : nil
+
+      json_response({commit: commit, release: release})
     end
 
     def json_response(payload, status: :ok)
