@@ -12,10 +12,10 @@ namespace :bundler do
           execute :bundle, "config", "set", "--local", "deployment", fetch(:bundle_deployment) { true }
           execute :bundle, "config", "set", "--local", "path", fetch(:bundle_path) if fetch(:bundle_path)
           if (without = fetch(:bundle_without))
-            execute :bundle, "config", "set", "--local", "without", without.join(":")
+            execute :bundle, "config", "set", "--local", "without", Array(without).join(":")
           end
           if (with_gems = fetch(:bundle_with))
-            execute :bundle, "config", "set", "--local", "with", with_gems.join(":")
+            execute :bundle, "config", "set", "--local", "with", Array(with_gems).join(":")
           end
         end
       end
