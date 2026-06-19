@@ -34,11 +34,13 @@ Returns application version information.
 **Response 200**
 ```json
 {
+  "version": "v1.2.3",
   "commit": "a1b2c3d4",
   "release": 12
 }
 ```
 
+- `version` — git release tag (e.g. `v1.2.3`) written to `VERSION` at deploy time; `null` if the file is absent
 - `commit` — first 8 characters of the git SHA from the `REVISION` file; `null` if the file is absent
 - `release` — number of entries in `revisions.log`; `null` if the file is absent
 

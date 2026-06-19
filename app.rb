@@ -115,11 +115,13 @@ class LeftWordleApi < Sinatra::Base
     def version_response
       revision_file = File.join(__dir__, "REVISION")
       revisions_log = File.join(__dir__, "..", "..", "revisions.log")
+      version_file = File.join(__dir__, "VERSION")
 
       commit = File.exist?(revision_file) ? File.read(revision_file).strip[0, 8] : nil
       release = File.exist?(revisions_log) ? File.readlines(revisions_log).count : nil
+      version = File.exist?(version_file) ? File.read(version_file).strip : nil
 
-      json_response({commit: commit, release: release})
+      json_response({version: version, commit: commit, release: release})
     end
 
     def json_response(payload, status: :ok)

@@ -20,6 +20,7 @@ namespace :deploy do
 
     if version_tag
       puts "  Release tag verified: #{version_tag} (#{commit_sha[0, 8]})"
+      set :release_version_tag, version_tag
     else
       abort <<~MSG
 
@@ -31,6 +32,14 @@ namespace :deploy do
       MSG
     end
   end
+
+  task :write_version_tag do
+    version_tag = fetch(:release_version_tag)
+    on roles(:app) do
+      upload! StringIO.new(version_tag), release_path.join("VERSION")
+    end
+  end
 end
 
 before "git:check", "deploy:check_release_tag"
+after "git:create_release", "deploy:write_version_tag"
