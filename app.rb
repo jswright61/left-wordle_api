@@ -114,7 +114,7 @@ class LeftWordleApi < Sinatra::Base
 
     def version_response
       revision_file = File.join(__dir__, "REVISION")
-      revisions_log = File.join(__dir__, "..", "revisions.log")
+      revisions_log = File.join(__dir__, "..", "..", "revisions.log")
 
       commit = File.exist?(revision_file) ? File.read(revision_file).strip[0, 8] : nil
       release = File.exist?(revisions_log) ? File.readlines(revisions_log).count : nil
