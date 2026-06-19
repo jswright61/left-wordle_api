@@ -15,10 +15,10 @@ namespace :puma do
     end
   end
 
-  desc "Restart puma via systemd (graceful)"
+  desc "Restart puma via systemd"
   task :restart do
     on roles(:app) do
-      sudo "systemctl reload-or-restart #{fetch(:puma_service)}"
+      sudo "systemctl restart #{fetch(:puma_service)}"
     end
   end
 
