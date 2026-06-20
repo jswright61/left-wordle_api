@@ -208,11 +208,20 @@ class LeftWordleApi < Sinatra::Base
       }
 
       if payload.key?("prev_guesses")
+        prev_guesses = payload["prev_guesses"]
+        unless prev_guesses.is_a?(Array) && prev_guesses.all? { |p|
+          p.is_a?(Array) && p.length == 2 &&
+            p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
+            p[1].to_s.match?(/\A[012]{5}\z/)
+        }
+          halt_json(:bad_request, "prev_guesses must be an array of [word, pattern] pairs")
+        end
+
         eval_string = g_evaluation_string(evaluation)
         response[:answers_remaining] = if eval_string == "22222"
           0
         else
-          answers_remaining_for(Array(payload["prev_guesses"]) + [[guess, eval_string]])
+          answers_remaining_for(prev_guesses + [[guess, eval_string]])
         end
       end
 

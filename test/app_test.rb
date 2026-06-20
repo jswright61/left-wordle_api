@@ -191,6 +191,27 @@ class AppTest < Minitest::Test
     assert_equal 1, json_response.fetch("answers_remaining")
   end
 
+  def test_post_guess_rejects_prev_guesses_that_is_not_an_array
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0, prev_guesses: '[["soare","00001"]]'}
+
+    assert_equal 400, last_response.status
+    assert_equal "prev_guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
+  def test_post_guess_rejects_prev_guesses_with_wrong_element_shape
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 1, prev_guesses: [["soare"]]}
+
+    assert_equal 400, last_response.status
+    assert_equal "prev_guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
+  def test_post_guess_rejects_prev_guesses_with_invalid_pattern
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 1, prev_guesses: [["soare", "xyz99"]]}
+
+    assert_equal 400, last_response.status
+    assert_equal "prev_guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
   def test_unversioned_routes_are_not_available
     get "/api/health"
     assert_equal 404, last_response.status

@@ -160,6 +160,7 @@ Duplicate letters are handled correctly — a letter is only marked `1` or `2` a
 | 400 | `Not in word list` | `guess` is 5 letters but not a recognized word |
 | 400 | `Row index must be an integer` | `row_index` is present but not an integer |
 | 400 | `Row index must be between 0 and 5` | `row_index` is outside the valid range |
+| 400 | `prev_guesses must be an array of [word, pattern] pairs` | `prev_guesses` is not an array, or any element is not a `[5-letter-word, 5-digit-pattern]` pair |
 
 ---
 
