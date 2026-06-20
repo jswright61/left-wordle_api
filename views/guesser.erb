@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Wordle Guesser</title>
+    <base href="/guesser/">
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">Entropy-assisted solving</p>
+        <h1>Wordle Guesser</h1>
+      </div>
+      <button id="reset-button" class="secondary-button hidden" type="button">New game</button>
+    </header>
+
+    <main>
+      <section id="starter-section" class="panel starter-panel">
+        <div class="section-heading">
+          <div>
+            <p class="step-label">Step 1</p>
+            <h2>Choose a starter</h2>
+          </div>
+          <p>Three high-entropy choices from each starter group.</p>
+        </div>
+
+        <div id="starter-choices" class="choice-grid" aria-live="polite">
+          <p class="loading-message">Loading starter choices...</p>
+        </div>
+
+        <form id="custom-starter-form" class="word-form">
+          <label for="custom-starter">Or enter any legal word</label>
+          <div class="input-row">
+            <input id="custom-starter" name="starter" maxlength="5" autocomplete="off" spellcheck="false" placeholder="CRANE">
+            <button type="submit">Use starter</button>
+          </div>
+          <p id="starter-error" class="form-message error-message" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="game-section" class="hidden">
+        <div class="game-layout">
+          <div class="game-main">
+            <section class="panel turn-panel">
+              <div class="turn-header">
+                <div>
+                  <p id="attempt-label" class="step-label">Attempt 1 of 6</p>
+                  <h2 id="current-guess">SOARE</h2>
+                </div>
+                <div class="remaining-stat">
+                  <strong id="remaining-count">0</strong>
+                  <span>remaining</span>
+                </div>
+              </div>
+
+              <div id="possibilities-block" class="possibilities hidden">
+                <span>Possibilities</span>
+                <div id="possibilities-list" class="word-chips"></div>
+              </div>
+
+              <form id="pattern-form" class="pattern-form">
+                <label for="pattern-input">Enter the result pattern</label>
+                <p class="field-hint">0 = absent, 1 = present, 2 = correct</p>
+                <div class="input-row">
+                  <input id="pattern-input" name="pattern" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="21001">
+                  <button type="submit">Apply pattern</button>
+                </div>
+                <p id="pattern-error" class="form-message error-message" role="alert"></p>
+              </form>
+            </section>
+
+            <section id="guess-section" class="panel hidden">
+              <div class="section-heading compact">
+                <div>
+                  <p class="step-label">Next guess</p>
+                  <h2>Suggested guesses</h2>
+                </div>
+                <div class="suggestion-tools">
+                  <p>Answer candidates receive a small entropy bonus.</p>
+                  <button id="highlight-unused" class="secondary-button highlight-toggle" type="button" aria-pressed="false" disabled>
+                    Highlight unused answers
+                  </button>
+                </div>
+              </div>
+
+              <div id="guess-choices" class="choice-grid"></div>
+
+              <form id="custom-guess-form" class="word-form">
+                <label for="custom-guess">Or enter your own guess</label>
+                <div class="input-row">
+                  <input id="custom-guess" name="guess" maxlength="5" autocomplete="off" spellcheck="false" placeholder="CRANE">
+                  <button type="submit">Use guess</button>
+                </div>
+                <p id="guess-error" class="form-message error-message" role="alert"></p>
+              </form>
+
+              <div id="guess-confirmation" class="confirmation hidden">
+                <p><strong id="confirmation-word"></strong> is not a remaining answer. Use it anyway?</p>
+                <div class="button-row">
+                  <button id="confirm-guess" type="button">Use anyway</button>
+                  <button id="cancel-guess" class="secondary-button" type="button">Cancel</button>
+                </div>
+              </div>
+            </section>
+
+            <section id="result-panel" class="panel result-panel hidden" aria-live="polite">
+              <p id="result-label" class="step-label">Game complete</p>
+              <h2 id="result-title"></h2>
+              <p id="result-detail"></p>
+              <button id="result-reset" type="button">Choose another starter</button>
+            </section>
+          </div>
+
+          <aside class="panel history-panel">
+            <div class="section-heading compact">
+              <div>
+                <p class="step-label">This game</p>
+                <h2>Guess history</h2>
+              </div>
+            </div>
+            <ol id="history-list" class="history-list">
+              <li id="empty-history" class="empty-history">Patterns will appear here.</li>
+            </ol>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      Game state stays in this browser tab. Requests only calculate choices and filter answers.
+    </footer>
+  </body>
+</html>

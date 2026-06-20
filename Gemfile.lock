@@ -5,6 +5,7 @@ GEM
       sshkit (>= 1.6.1, != 1.7.0)
     ast (2.4.3)
     base64 (0.3.0)
+    bcrypt (3.1.22)
     capistrano (3.20.1)
       airbrussh (>= 1.0.0)
       i18n
@@ -120,6 +121,7 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
+  bcrypt (~> 3.1)
   capistrano (~> 3.19)
   capistrano-bundler (~> 2.1)
   date (~> 3.5)
@@ -137,6 +139,7 @@ CHECKSUMS
   airbrussh (1.6.1) sha256=9a5fc95583cefe722054a016d26ff0338cf00072b031b829086dde2039d5836a
   ast (2.4.3) sha256=954615157c1d6a382bc27d690d973195e79db7f55e9765ac7c481c60bdb4d383
   base64 (0.3.0) sha256=27337aeabad6ffae05c265c450490628ef3ebd4b67be58257393227588f5a97b
+  bcrypt (3.1.22) sha256=1f0072e88c2d705d94aff7f2c5cb02eb3f1ec4b8368671e19112527489f29032
   bundler (4.0.11) sha256=5bcec0fb78302e48d02ee46f10ee6e6942be647ba5b44a6d1ddfda9a240ce785
   capistrano (3.20.1) sha256=b0d54ba5cf49bb194998bf6b427e889aa36ed05f545ecf7cc37acb9d529e9ae9
   capistrano-bundler (2.2.0) sha256=47b4cf2ea17ea132bb0a5cabc5663443f5190a54f4da5b322d04e1558ff1468c

@@ -1,12 +1,18 @@
 # frozen_string_literal: true
 
+require "bcrypt"
 require "json"
 require "sinatra/base"
+require "yaml"
 
 require_relative "lib/left_wordle/game"
+require_relative "lib/guesser/solve_engine"
 
 class LeftWordleApi < Sinatra::Base
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
+
+  set :root, File.expand_path(__dir__)
+  enable :static
 
   configure do
     set :allowed_origins, ENV.fetch("CORS_ORIGINS", "").split(",").map(&:strip).reject(&:empty?).freeze
@@ -14,10 +20,24 @@ class LeftWordleApi < Sinatra::Base
     set :show_exceptions, false
   end
 
+  set :engine, SolveEngine.new
+
+  users_file = File.join(File.expand_path(__dir__), "users.yml")
+  set :users, File.exist?(users_file) ? (YAML.load_file(users_file) || {}) : {}
+
   before do
+    next if request.path.start_with?("/guesser")
     content_type :json
     validate_request_origin!
     headers cors_headers.merge("Cache-Control" => "no-store")
+  end
+
+  before "/guesser*" do
+    guesser_protected!
+  end
+
+  before "/guesser/api/*" do
+    content_type :json
   end
 
   options "*" do
@@ -38,6 +58,71 @@ class LeftWordleApi < Sinatra::Base
 
   post "/api/v1/game/guess" do
     guess_response
+  end
+
+  get "/guesser" do
+    erb :guesser
+  end
+
+  get "/guesser/api/starter-choices" do
+    JSON.generate(starter_choices: guesser.starter_choices)
+  end
+
+  post "/guesser/api/start" do
+    body = g_json_body
+    starter = g_normalized_word(body["starter"])
+    g_halt(422, "Starter must be a legal 5 character word") unless g_legal_word?(starter)
+
+    remaining = settings.engine.start_remaining
+    JSON.generate(
+      starter:,
+      attempt: 1,
+      current_guess: starter,
+      remaining:,
+      remaining_count: remaining.length,
+      possibilities: g_visible_possibilities(remaining),
+      unused_possibilities: g_visible_unused_possibilities(remaining)
+    )
+  end
+
+  post "/guesser/api/validate-word" do
+    body = g_json_body
+    word = g_normalized_word(body["word"])
+    remaining = g_word_array(body["remaining"])
+
+    JSON.generate(
+      word:,
+      valid: g_legal_word?(word),
+      in_remaining: remaining.include?(word)
+    )
+  end
+
+  post "/guesser/api/turn" do
+    body = g_json_body
+    attempt = Integer(body["attempt"], exception: false)
+    guess = g_normalized_word(body["guess"])
+    pattern = g_parse_pattern(body["pattern"])
+    remaining = g_word_array(body["remaining"])
+
+    g_halt(422, "Attempt must be between 1 and #{SolveEngine::MAX_ATTEMPTS}") unless (1..SolveEngine::MAX_ATTEMPTS).cover?(attempt)
+    g_halt(422, "Guess must be a legal 5 character word") unless g_legal_word?(guess)
+    g_halt(422, "Pattern must contain exactly five digits from 0 to 2") unless pattern
+    g_halt(422, "Remaining words are required") if remaining.empty?
+
+    result = settings.engine.process_turn(remaining:, guess:, pattern:, attempt:)
+
+    case result[:status]
+    when :solved
+      halt 200, JSON.generate(status: "solved", attempt:, guess:, remaining_count: 0)
+    when :no_answers
+      halt 200, g_turn_result("no_answers", attempt:, remaining: result[:remaining])
+    when :answer
+      halt 200, g_turn_result("answer", attempt:, remaining: result[:remaining], answer: result[:answer])
+    when :exhausted
+      halt 200, g_turn_result("exhausted", attempt:, remaining: result[:remaining])
+    when :continue
+      g_turn_result("continue", attempt: result[:attempt], remaining: result[:remaining], suggestions: result[:suggestions])
+    end
   end
 
   not_found do
@@ -178,6 +263,74 @@ class LeftWordleApi < Sinatra::Base
       return if origin.nil? || settings.allowed_origins.include?(origin)
 
       halt_json(:forbidden, "Origin not allowed")
+    end
+
+    def guesser_protected!
+      return if guesser_authorized?
+      headers["WWW-Authenticate"] = 'Basic realm="Wordle Guesser"'
+      halt 401, "Not authorized"
+    end
+
+    def guesser_authorized?
+      auth = Rack::Auth::Basic::Request.new(request.env)
+      return false unless auth.provided? && auth.basic? && auth.credentials
+      username, password = auth.credentials
+      stored = settings.users[username]
+      stored && BCrypt::Password.new(stored) == password
+    end
+
+    def guesser
+      settings.engine.guesser
+    end
+
+    def g_halt(status_code, message)
+      halt status_code, JSON.generate(error: message)
+    end
+
+    def g_json_body
+      JSON.parse(request.body.read)
+    end
+
+    def g_legal_word?(word)
+      word&.match?(/\A[A-Z]{5}\z/) && guesser.legal_words.include?(word)
+    end
+
+    def g_normalized_word(value)
+      value.to_s.strip.upcase
+    end
+
+    def g_parse_pattern(value)
+      string = value.to_s.strip
+      return unless string.match?(/\A[012]{5}\z/)
+      string.chars.map(&:to_i)
+    end
+
+    def g_turn_result(status, attempt:, remaining:, suggestions: [], answer: nil)
+      JSON.generate(
+        status:,
+        attempt:,
+        remaining:,
+        remaining_count: remaining.length,
+        possibilities: g_visible_possibilities(remaining),
+        unused_possibilities: g_visible_unused_possibilities(remaining),
+        suggestions:,
+        answer:
+      )
+    end
+
+    def g_visible_possibilities(words)
+      (words.length <= 10) ? words : []
+    end
+
+    def g_visible_unused_possibilities(words)
+      g_visible_possibilities(words) & guesser.unused
+    end
+
+    def g_word_array(value)
+      Array(value).filter_map do |word|
+        normalized = g_normalized_word(word)
+        normalized if normalized.match?(/\A[A-Z]{5}\z/)
+      end
     end
   end
 end

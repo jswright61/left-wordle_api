@@ -5,6 +5,7 @@ source "https://rubygems.org"
 ruby File.read(".ruby-version").strip
 
 gem "sinatra", "~> 4.2"
+gem "bcrypt", "~> 3.1"
 
 gem "yaml", "~> 0.4.0"
 
