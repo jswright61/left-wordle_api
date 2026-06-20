@@ -169,6 +169,17 @@ class AppTest < Minitest::Test
     assert_equal expected, json_response.fetch("answers_remaining")
   end
 
+  def test_post_guess_returns_zero_answers_remaining_for_winning_guess
+    date = "2021-06-19"
+    answer = answer_for(date)
+
+    post_json "/api/v1/game/guess", {date: date, guess: answer, row_index: 0, prev_guesses: []}
+
+    assert last_response.ok?
+    assert_equal "WIN", json_response.fetch("game_status")
+    assert_equal 0, json_response.fetch("answers_remaining")
+  end
+
   def test_post_guess_filters_answers_by_prev_guesses_and_current_guess
     date = "2021-06-19"
     answer = answer_for(date)

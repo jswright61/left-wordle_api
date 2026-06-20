@@ -208,8 +208,12 @@ class LeftWordleApi < Sinatra::Base
       }
 
       if payload.key?("prev_guesses")
-        all_guesses = Array(payload["prev_guesses"]) + [[guess, g_evaluation_string(evaluation)]]
-        response[:answers_remaining] = answers_remaining_for(all_guesses)
+        eval_string = g_evaluation_string(evaluation)
+        response[:answers_remaining] = if eval_string == "22222"
+          0
+        else
+          answers_remaining_for(Array(payload["prev_guesses"]) + [[guess, eval_string]])
+        end
       end
 
       json_response(response)
