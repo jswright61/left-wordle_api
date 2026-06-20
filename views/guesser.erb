@@ -61,15 +61,7 @@
                 <div id="possibilities-list" class="word-chips"></div>
               </div>
 
-              <form id="pattern-form" class="pattern-form">
-                <label for="pattern-input">Enter the result pattern</label>
-                <p class="field-hint">0 = absent, 1 = present, 2 = correct</p>
-                <div class="input-row">
-                  <input id="pattern-input" name="pattern" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="21001">
-                  <button type="submit">Apply pattern</button>
-                </div>
-                <p id="pattern-error" class="form-message error-message" role="alert"></p>
-              </form>
+              <p id="eval-error" class="form-message error-message" role="alert"></p>
             </section>
 
             <section id="guess-section" class="panel hidden">

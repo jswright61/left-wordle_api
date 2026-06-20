@@ -61,6 +61,10 @@ module LeftWordle
       (date - PUZZLE_EPOCH).to_i
     end
 
+    def all_answers
+      WordData::AnswerList::WORDS
+    end
+
     def valid_guess?(word)
       ALL_VALID_WORDS.include?(word.downcase)
     end

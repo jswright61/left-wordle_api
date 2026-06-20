@@ -85,6 +85,25 @@ class LeftWordleApi < Sinatra::Base
     )
   end
 
+  post "/guesser/api/evaluate" do
+    body = g_json_body
+    guess = g_normalized_word(body["guess"]).downcase
+    date_str = body.fetch("date", LeftWordle::Game.latest_available_date.iso8601).to_s
+
+    g_halt(422, "Guess must be a legal 5 character word") unless guess.match?(/\A[a-z]{5}\z/) && LeftWordle::Game.valid_guess?(guess)
+
+    date = begin
+      Date.iso8601(date_str)
+    rescue Date::Error
+      g_halt(422, "Date must be a valid calendar date")
+    end
+
+    answer = LeftWordle::Game.answer_for(LeftWordle::Game.puzzle_number_for(date))
+    evaluation = g_evaluation_string(LeftWordle::Game.evaluate(guess, answer))
+
+    JSON.generate(evaluation:)
+  end
+
   post "/guesser/api/validate-word" do
     body = g_json_body
     word = g_normalized_word(body["word"])
@@ -179,14 +198,20 @@ class LeftWordleApi < Sinatra::Base
       evaluation = LeftWordle::Game.evaluate(guess, answer)
       game_status = game_status_for(evaluation, row_index)
 
-      json_response({
+      response = {
         date: date.iso8601,
-        evaluation: evaluation,
+        evaluation: g_evaluation_string(evaluation),
         game_status: game_status,
         puzzle_num: puzzle_number,
         guess_number: row_index + 1,
         solution: (answer if game_status != "IN_PROGRESS")
-      })
+      }
+
+      if payload.key?("prev_guesses")
+        response[:answers_remaining] = answers_remaining_for(Array(payload["prev_guesses"]))
+      end
+
+      json_response(response)
     end
 
     def halt_json(status, message)
@@ -324,6 +349,22 @@ class LeftWordleApi < Sinatra::Base
 
     def g_visible_unused_possibilities(words)
       g_visible_possibilities(words) & guesser.unused
+    end
+
+    def g_evaluation_string(evaluation)
+      map = {LeftWordle::Game::ABSENT => "0", LeftWordle::Game::PRESENT => "1", LeftWordle::Game::CORRECT => "2"}
+      evaluation.map { |v| map[v] }.join
+    end
+
+    def answers_remaining_for(prev_guesses)
+      remaining = LeftWordle::Game.all_answers
+      prev_guesses.each do |pair|
+        guess = pair[0].to_s.downcase
+        pattern = pair[1].to_s
+        next unless guess.match?(/\A[a-z]{5}\z/) && pattern.match?(/\A[012]{5}\z/)
+        remaining = remaining.select { |candidate| g_evaluation_string(LeftWordle::Game.evaluate(guess, candidate)) == pattern }
+      end
+      remaining.length
     end
 
     def g_word_array(value)

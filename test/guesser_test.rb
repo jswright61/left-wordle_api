@@ -67,6 +67,21 @@ class GuesserTest < Minitest::Test
     assert_equal %w[CHUNK FIGHT], body.fetch("unused_possibilities")
   end
 
+  def test_evaluate_returns_evaluation_string_for_valid_guess
+    post_guesser_json("/guesser/api/evaluate", guess: "crane", date: "2021-06-19")
+    body = json_response
+
+    assert last_response.ok?
+    assert_match(/\A[012]{5}\z/, body.fetch("evaluation"))
+  end
+
+  def test_evaluate_rejects_an_illegal_guess
+    post_guesser_json("/guesser/api/evaluate", guess: "zzzzz", date: "2021-06-19")
+
+    assert_equal 422, last_response.status
+    assert_includes json_response.fetch("error"), "legal"
+  end
+
   def test_validate_word_reports_legal_and_remaining_membership
     post_guesser_json("/guesser/api/validate-word", word: "chunk", remaining: %w[BLIND CHUNK])
     body = json_response

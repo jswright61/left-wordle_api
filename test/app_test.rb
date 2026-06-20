@@ -143,11 +143,35 @@ class AppTest < Minitest::Test
 
     assert last_response.ok?
     assert_equal date, json_response.fetch("date")
-    assert_equal ["correct"] * 5, json_response.fetch("evaluation")
+    assert_equal "22222", json_response.fetch("evaluation")
     assert_equal "WIN", json_response.fetch("game_status")
     assert_equal 1, json_response.fetch("puzzle_num")
     assert_equal 1, json_response.fetch("guess_number")
     assert_equal answer, json_response.fetch("solution")
+  end
+
+  def test_post_guess_omits_answers_remaining_when_prev_guesses_absent
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0}
+
+    assert last_response.ok?
+    refute json_response.key?("answers_remaining")
+  end
+
+  def test_post_guess_returns_full_answer_count_for_empty_prev_guesses
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0, prev_guesses: []}
+
+    assert last_response.ok?
+    assert_equal LeftWordle::Game.all_answers.length, json_response.fetch("answers_remaining")
+  end
+
+  def test_post_guess_filters_answers_by_prev_guesses
+    date = "2021-06-19"
+    answer = answer_for(date)
+
+    post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 1, prev_guesses: [[answer, "22222"]]}
+
+    assert last_response.ok?
+    assert_equal 1, json_response.fetch("answers_remaining")
   end
 
   def test_unversioned_routes_are_not_available

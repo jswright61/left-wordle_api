@@ -12,9 +12,7 @@ const elements = {
   remainingCount: document.querySelector("#remaining-count"),
   possibilitiesBlock: document.querySelector("#possibilities-block"),
   possibilitiesList: document.querySelector("#possibilities-list"),
-  patternForm: document.querySelector("#pattern-form"),
-  patternInput: document.querySelector("#pattern-input"),
-  patternError: document.querySelector("#pattern-error"),
+  evalError: document.querySelector("#eval-error"),
   guessSection: document.querySelector("#guess-section"),
   guessChoices: document.querySelector("#guess-choices"),
   highlightUnused: document.querySelector("#highlight-unused"),
@@ -98,7 +96,7 @@ async function startGame(starter) {
       method: "POST",
       body: JSON.stringify({ starter })
     });
-    state = { ...body, history: [], suggestions: [] };
+    state = { ...body, history: [], suggestions: [], date: new Date().toISOString().slice(0, 10) };
     elements.starterSection.classList.add("hidden");
     elements.gameSection.classList.remove("hidden");
     elements.resetButton.classList.remove("hidden");
@@ -113,13 +111,23 @@ function renderTurn() {
   elements.attemptLabel.textContent = `Attempt ${state.attempt} of 6`;
   elements.currentGuess.textContent = state.current_guess;
   elements.remainingCount.textContent = state.remaining_count;
-  elements.patternInput.value = "";
-  elements.patternError.textContent = "";
-  elements.patternForm.classList.remove("hidden");
+  elements.evalError.textContent = "";
   elements.guessSection.classList.add("hidden");
   renderPossibilities(state.possibilities || [], state.unused_possibilities || []);
   renderHistory();
-  elements.patternInput.focus();
+  evaluateCurrentGuess();
+}
+
+async function evaluateCurrentGuess() {
+  try {
+    const body = await api("api/evaluate", {
+      method: "POST",
+      body: JSON.stringify({ guess: state.current_guess, date: state.date })
+    });
+    await applyPattern(body.evaluation);
+  } catch (error) {
+    elements.evalError.textContent = error.message;
+  }
 }
 
 function renderPossibilities(words, unusedWords) {
@@ -148,12 +156,6 @@ function renderHistory() {
 }
 
 async function applyPattern(pattern) {
-  elements.patternError.textContent = "";
-  if (!/^[012]{5}$/.test(pattern)) {
-    elements.patternError.textContent = "Use exactly five digits containing only 0, 1, or 2.";
-    return;
-  }
-
   const guess = state.current_guess;
   try {
     const body = await api("api/turn", {
@@ -189,7 +191,7 @@ async function applyPattern(pattern) {
       finishGame("Six attempts used", `${body.remaining_count} possibilities still remain.`);
     }
   } catch (error) {
-    elements.patternError.textContent = error.message;
+    elements.evalError.textContent = error.message;
   }
 }
 
@@ -197,7 +199,6 @@ function showGuessChoices() {
   elements.attemptLabel.textContent = `Attempt ${state.attempt} of 6`;
   elements.currentGuess.textContent = "Choose a guess";
   elements.remainingCount.textContent = state.remaining_count;
-  elements.patternForm.classList.add("hidden");
   elements.guessSection.classList.remove("hidden");
   elements.guessChoices.innerHTML = state.suggestions
     .slice(0, 9)
@@ -252,7 +253,6 @@ async function validateCustomGuess(word) {
 
 function finishGame(title, detail) {
   elements.remainingCount.textContent = state.remaining_count;
-  elements.patternForm.classList.add("hidden");
   elements.guessSection.classList.add("hidden");
   elements.resultTitle.textContent = title;
   elements.resultDetail.textContent = detail;
@@ -287,11 +287,6 @@ elements.guessChoices.addEventListener("click", (event) => {
 elements.starterForm.addEventListener("submit", (event) => {
   event.preventDefault();
   startGame(normalizedWord(elements.starterInput.value));
-});
-
-elements.patternForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  applyPattern(elements.patternInput.value.trim());
 });
 
 elements.guessForm.addEventListener("submit", (event) => {
