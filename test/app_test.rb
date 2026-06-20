@@ -157,20 +157,26 @@ class AppTest < Minitest::Test
     refute json_response.key?("answers_remaining")
   end
 
-  def test_post_guess_returns_full_answer_count_for_empty_prev_guesses
-    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0, prev_guesses: []}
+  def test_post_guess_returns_count_after_current_guess_for_empty_prev_guesses
+    date = "2021-06-19"
+    answer = answer_for(date)
+
+    post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 0, prev_guesses: []}
 
     assert last_response.ok?
-    assert_equal LeftWordle::Game.all_answers.length, json_response.fetch("answers_remaining")
+    # answers_remaining reflects answers left after the current guess (not just prev_guesses)
+    expected = answers_remaining_count([["crane", answer]])
+    assert_equal expected, json_response.fetch("answers_remaining")
   end
 
-  def test_post_guess_filters_answers_by_prev_guesses
+  def test_post_guess_filters_answers_by_prev_guesses_and_current_guess
     date = "2021-06-19"
     answer = answer_for(date)
 
     post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 1, prev_guesses: [[answer, "22222"]]}
 
     assert last_response.ok?
+    # prev_guesses filtered to just the answer; current guess also matches, so still 1
     assert_equal 1, json_response.fetch("answers_remaining")
   end
 
@@ -190,5 +196,21 @@ class AppTest < Minitest::Test
   def answer_for(date)
     puzzle_number = LeftWordle::Game.puzzle_number_for(Date.iso8601(date))
     LeftWordle::Game.answer_for(puzzle_number)
+  end
+
+  def evaluation_string(eval_array)
+    map = {LeftWordle::Game::ABSENT => "0", LeftWordle::Game::PRESENT => "1", LeftWordle::Game::CORRECT => "2"}
+    eval_array.map { |v| map[v] }.join
+  end
+
+  def answers_remaining_count(guess_answer_pairs)
+    remaining = LeftWordle::Game.all_answers
+    guess_answer_pairs.each do |guess, answer|
+      pattern = evaluation_string(LeftWordle::Game.evaluate(guess, answer))
+      remaining = remaining.select { |candidate|
+        evaluation_string(LeftWordle::Game.evaluate(guess, candidate)) == pattern
+      }
+    end
+    remaining.length
   end
 end

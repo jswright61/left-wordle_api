@@ -102,7 +102,7 @@ Evaluates a guess against the puzzle answer for a given date.
 | `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
 | `guess` | string | Yes | 5-letter word; case-insensitive |
 | `row_index` | integer | No | Zero-based guess attempt number (0–5); defaults to `0` |
-| `prev_guesses` | array | No | Array of `[word, pattern]` pairs for all prior guesses. When present, `answers_remaining` is included in the response. Each pattern is a 5-character string of digits: `0`=absent, `1`=present, `2`=correct. |
+| `prev_guesses` | array | No | Array of `[word, pattern]` pairs for all prior guesses. When present, `answers_remaining` is included in the response. Each pattern is a 5-character string of digits: `0`=absent, `1`=present, `2`=correct. The current guess is automatically included in the filter, so `answers_remaining` reflects answers still possible after this guess. |
 
 **Response 200**
 
@@ -126,7 +126,7 @@ Evaluates a guess against the puzzle answer for a given date.
 | `puzzle_num` | integer | Days since puzzle epoch |
 | `guess_number` | integer | The ordinal guess number (1–6); 1 = first guess |
 | `solution` | string or null | The answer word; only revealed on `WIN` or `FAIL`, otherwise `null` |
-| `answers_remaining` | integer | Number of possible answers remaining after filtering by `prev_guesses`; only present when `prev_guesses` was supplied in the request |
+| `answers_remaining` | integer | Number of possible answers remaining after the current guess (filters by `prev_guesses` plus the current guess's evaluated pattern); only present when `prev_guesses` was supplied in the request |
 
 **Evaluation digit values**
 
