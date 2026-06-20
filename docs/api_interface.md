@@ -92,7 +92,8 @@ Evaluates a guess against the puzzle answer for a given date.
 {
   "date": "2021-06-19",
   "guess": "crane",
-  "row_index": 0
+  "row_index": 0,
+  "prev_guesses": [["slate", "01200"], ["crate", "02200"]]
 }
 ```
 
@@ -101,38 +102,41 @@ Evaluates a guess against the puzzle answer for a given date.
 | `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
 | `guess` | string | Yes | 5-letter word; case-insensitive |
 | `row_index` | integer | No | Zero-based guess attempt number (0–5); defaults to `0` |
+| `prev_guesses` | array | No | Array of `[word, pattern]` pairs for all prior guesses. When present, `answers_remaining` is included in the response. Each pattern is a 5-character string of digits: `0`=absent, `1`=present, `2`=correct. |
 
 **Response 200**
 
 ```json
 {
   "date": "2021-06-19",
-  "evaluation": ["absent", "present", "correct", "absent", "absent"],
+  "evaluation": "01020",
   "game_status": "IN_PROGRESS",
   "puzzle_num": 0,
   "guess_number": 1,
-  "solution": null
+  "solution": null,
+  "answers_remaining": 87
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `date` | string | Echoes the requested date |
-| `evaluation` | array of strings | Per-letter result; one entry per letter (see below) |
+| `evaluation` | string | Per-letter result as a 5-character digit string: `0`=absent, `1`=present, `2`=correct |
 | `game_status` | string | Current game state (see below) |
 | `puzzle_num` | integer | Days since puzzle epoch |
 | `guess_number` | integer | The ordinal guess number (1–6); 1 = first guess |
 | `solution` | string or null | The answer word; only revealed on `WIN` or `FAIL`, otherwise `null` |
+| `answers_remaining` | integer | Number of possible answers remaining after filtering by `prev_guesses`; only present when `prev_guesses` was supplied in the request |
 
-**Evaluation values**
+**Evaluation digit values**
 
-| Value | Meaning |
+| Digit | Meaning |
 |-------|---------|
-| `"correct"` | Letter is in the correct position |
-| `"present"` | Letter is in the answer but in the wrong position |
-| `"absent"` | Letter is not in the answer |
+| `"2"` | Letter is in the correct position |
+| `"1"` | Letter is in the answer but in the wrong position |
+| `"0"` | Letter is not in the answer |
 
-Duplicate letters are handled correctly — a letter is only marked `present` or `correct` as many times as it appears in the answer.
+Duplicate letters are handled correctly — a letter is only marked `1` or `2` as many times as it appears in the answer.
 
 **Game status values**
 
