@@ -2,4 +2,5 @@
 
 require_relative "app"
 
+use VerboseLogger
 run LeftWordleApi

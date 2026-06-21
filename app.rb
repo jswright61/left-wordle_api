@@ -7,15 +7,18 @@ require "yaml"
 
 require_relative "lib/left_wordle/game"
 require_relative "lib/guesser/solve_engine"
+require_relative "lib/verbose_logger"
 
 class LeftWordleApi < Sinatra::Base
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
+  DEBUG_BEARER_TOKEN = "lw_api_ba1ae52dcec8187b3e587f4ccd23067a2732d077f9161389557e37e5d3605291"
 
   set :root, File.expand_path(__dir__)
   enable :static
 
   configure do
     set :allowed_origins, ENV.fetch("CORS_ORIGINS", "").split(",").map(&:strip).reject(&:empty?).freeze
+    set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
   end
@@ -58,6 +61,31 @@ class LeftWordleApi < Sinatra::Base
 
   post "/api/v1/game/guess" do
     guess_response
+  end
+
+  get "/api/v1/debug/verbose" do
+    json_response({verbose_logging: VerboseLogging.enabled?})
+  end
+
+  post "/api/v1/debug/verbose" do
+    verbose_logging_authorized!
+    payload = request_payload
+    enabled = payload["enabled"]
+    halt_json(:bad_request, "enabled must be true or false") unless [true, false].include?(enabled)
+    VerboseLogging.enabled = enabled
+    json_response({verbose_logging: VerboseLogging.enabled?})
+  end
+
+  get "/api/v1/ref/legal_words" do
+    legal_words_response
+  end
+
+  get "/api/v1/ref/answers" do
+    answers_response
+  end
+
+  get "/api/v1/ref/prev_answers" do
+    prev_answers_response
   end
 
   get "/guesser" do
@@ -297,6 +325,13 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "Row index must be an integer")
     end
 
+    def verbose_logging_authorized!
+      return if ENV["RACK_ENV"] == "development"
+      auth = request.env["HTTP_AUTHORIZATION"]
+      return if auth&.start_with?("Bearer ") && auth.delete_prefix("Bearer ") == DEBUG_BEARER_TOKEN
+      halt_json(:unauthorized, "Unauthorized")
+    end
+
     def validate_request_origin!
       origin = request.env["HTTP_ORIGIN"]
       return if origin.nil? || settings.allowed_origins.include?(origin)
@@ -386,6 +421,29 @@ class LeftWordleApi < Sinatra::Base
         normalized = g_normalized_word(word)
         normalized if normalized.match?(/\A[A-Z]{5}\z/)
       end
+    end
+
+    def legal_words_response
+      json_response(LeftWordle::Game::ALL_VALID_WORDS.sort)
+    end
+
+    def answers_response
+      json_response(LeftWordle::Game.all_answers.sort)
+    end
+
+    def prev_answers_response
+      today = requested_date(params["date"])
+      last_puzzle = LeftWordle::Game.puzzle_number_for(today - 1)
+
+      records = (0..last_puzzle).map do |n|
+        {
+          puzzle_number: n,
+          date: (LeftWordle::Game::PUZZLE_EPOCH + n).iso8601,
+          word: LeftWordle::Game.answer_for(n)
+        }
+      end
+
+      json_response(records)
     end
   end
 end
