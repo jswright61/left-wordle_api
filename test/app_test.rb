@@ -150,7 +150,7 @@ class AppTest < Minitest::Test
     assert_equal answer, json_response.fetch("solution")
   end
 
-  def test_post_guess_omits_answers_remaining_when_prev_guesses_absent
+  def test_post_guess_omits_answers_remaining_without_return_remaining_count
     post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0}
 
     assert last_response.ok?
@@ -161,7 +161,7 @@ class AppTest < Minitest::Test
     date = "2021-06-19"
     answer = answer_for(date)
 
-    post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 0, prev_guesses: []}
+    post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 0, prev_guesses: [], return_remaining_count: true}
 
     assert last_response.ok?
     # answers_remaining reflects answers left after the current guess (not just prev_guesses)
@@ -173,7 +173,7 @@ class AppTest < Minitest::Test
     date = "2021-06-19"
     answer = answer_for(date)
 
-    post_json "/api/v1/game/guess", {date: date, guess: answer, row_index: 0, prev_guesses: []}
+    post_json "/api/v1/game/guess", {date: date, guess: answer, row_index: 0, prev_guesses: [], return_remaining_count: true}
 
     assert last_response.ok?
     assert_equal "WIN", json_response.fetch("game_status")
@@ -184,11 +184,97 @@ class AppTest < Minitest::Test
     date = "2021-06-19"
     answer = answer_for(date)
 
-    post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 1, prev_guesses: [[answer, "22222"]]}
+    post_json "/api/v1/game/guess", {date: date, guess: "crane", row_index: 1, prev_guesses: [[answer, "22222"]], return_remaining_count: true}
 
     assert last_response.ok?
     # prev_guesses filtered to just the answer; current guess also matches, so still 1
     assert_equal 1, json_response.fetch("answers_remaining")
+  end
+
+  def test_post_guess_rejects_invalid_mode
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0, mode: "nightmare"}
+
+    assert_equal 400, last_response.status
+    assert_equal "Mode must be regular, hard, or insane", json_response.fetch("detail")
+  end
+
+  def test_post_guess_accepts_regular_mode
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0, mode: "regular", prev_guesses: []}
+
+    assert last_response.ok?
+  end
+
+  def test_post_guess_rejects_hard_mode_correct_position_violation
+    date = "2021-06-19"
+    # "crane" vs "cigar": c=correct(pos 0), r=present, a=present → "21100"
+    # "stale" has 's' at pos 0, violating the correct 'c' at pos 0
+    post_json "/api/v1/game/guess", {
+      date: date, guess: "stale", row_index: 1, mode: "hard",
+      prev_guesses: [["crane", "21100"]]
+    }
+
+    assert_equal 400, last_response.status
+    assert_equal "1st letter must be C", json_response.fetch("detail")
+  end
+
+  def test_post_guess_rejects_hard_mode_missing_required_letter
+    date = "2021-06-19"
+    # Must include 'r' and 'a' (both present in "crane" mask "21100")
+    # "might" has neither 'r' nor 'a'
+    post_json "/api/v1/game/guess", {
+      date: date, guess: "might", row_index: 1, mode: "hard",
+      prev_guesses: [["crane", "21100"]]
+    }
+
+    assert_equal 400, last_response.status
+  end
+
+  def test_post_guess_accepts_valid_hard_mode_guess
+    date = "2021-06-19"
+    # "cargo": c at pos 0 ✓, has 'r' ✓, has 'a' ✓ → satisfies "crane" mask "21100"
+    post_json "/api/v1/game/guess", {
+      date: date, guess: "cargo", row_index: 1, mode: "hard",
+      prev_guesses: [["crane", "21100"]]
+    }
+
+    assert last_response.ok?
+  end
+
+  def test_post_guess_rejects_insane_mode_forbidden_position
+    date = "2021-06-19"
+    # "crane" mask "21100": r at pos 1 and a at pos 2 are forbidden positions
+    # "craft": c at 0 ✓, r at pos 1 (FORBIDDEN), a at 2 (also FORBIDDEN)
+    post_json "/api/v1/game/guess", {
+      date: date, guess: "craft", row_index: 1, mode: "insane",
+      prev_guesses: [["crane", "21100"]]
+    }
+
+    assert_equal 400, last_response.status
+    assert_match(/can't be in 2nd position/i, json_response.fetch("detail"))
+  end
+
+  def test_post_guess_rejects_insane_mode_absent_letter
+    date = "2021-06-19"
+    # "crane" mask "21100": n and e are absent — insane mode bans them
+    # "carve": c at 0 ✓, a at 1 (not forbidden), r at 2 (not forbidden), has 'e' (ABSENT → banned)
+    post_json "/api/v1/game/guess", {
+      date: date, guess: "carve", row_index: 1, mode: "insane",
+      prev_guesses: [["crane", "21100"]]
+    }
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot contain E/i, json_response.fetch("detail"))
+  end
+
+  def test_post_guess_accepts_valid_insane_mode_guess
+    date = "2021-06-19"
+    # "cargo": c at 0 ✓, a at 1 (not forbidden), r at 2 (not forbidden), g and o not absent
+    post_json "/api/v1/game/guess", {
+      date: date, guess: "cargo", row_index: 1, mode: "insane",
+      prev_guesses: [["crane", "21100"]]
+    }
+
+    assert last_response.ok?
   end
 
   def test_post_guess_rejects_prev_guesses_that_is_not_an_array

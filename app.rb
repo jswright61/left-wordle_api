@@ -221,6 +221,24 @@ class LeftWordleApi < Sinatra::Base
       end
 
       row_index = row_index_from(payload)
+
+      mode = payload.fetch("mode", "regular").to_s
+      halt_json(:bad_request, "Mode must be regular, hard, or insane") unless %w[regular hard insane].include?(mode)
+
+      prev_guesses = payload.fetch("prev_guesses", [])
+      unless prev_guesses.is_a?(Array) && prev_guesses.all? { |p|
+        p.is_a?(Array) && p.length == 2 &&
+          p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
+          p[1].to_s.match?(/\A[012]{5}\z/)
+      }
+        halt_json(:bad_request, "prev_guesses must be an array of [word, pattern] pairs")
+      end
+
+      case mode
+      when "hard" then validate_hard_mode!(guess, prev_guesses)
+      when "insane" then validate_insane_mode!(guess, prev_guesses)
+      end
+
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
       answer = LeftWordle::Game.answer_for(puzzle_number)
       evaluation = LeftWordle::Game.evaluate(guess, answer)
@@ -235,16 +253,7 @@ class LeftWordleApi < Sinatra::Base
         solution: (answer if game_status != "IN_PROGRESS")
       }
 
-      if payload.key?("prev_guesses")
-        prev_guesses = payload["prev_guesses"]
-        unless prev_guesses.is_a?(Array) && prev_guesses.all? { |p|
-          p.is_a?(Array) && p.length == 2 &&
-            p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
-            p[1].to_s.match?(/\A[012]{5}\z/)
-        }
-          halt_json(:bad_request, "prev_guesses must be an array of [word, pattern] pairs")
-        end
-
+      if payload["return_remaining_count"] == true
         eval_string = g_evaluation_string(evaluation)
         response[:answers_remaining] = if eval_string == "22222"
           0
@@ -403,6 +412,98 @@ class LeftWordleApi < Sinatra::Base
     def g_evaluation_string(evaluation)
       map = {LeftWordle::Game::ABSENT => "0", LeftWordle::Game::PRESENT => "1", LeftWordle::Game::CORRECT => "2"}
       evaluation.map { |v| map[v] }.join
+    end
+
+    def validate_hard_mode!(guess, prev_guesses)
+      return if prev_guesses.empty?
+
+      last_word, last_mask = prev_guesses.last
+      last_word = last_word.to_s.downcase
+      last_mask = last_mask.to_s
+
+      last_mask.each_char.with_index do |eval_char, i|
+        if eval_char == "2" && guess[i] != last_word[i]
+          halt_json(:bad_request, "#{ordinal(i + 1)} letter must be #{last_word[i].upcase}")
+        end
+      end
+
+      required = Hash.new(0)
+      last_mask.each_char.with_index do |eval_char, i|
+        required[last_word[i]] += 1 if %w[1 2].include?(eval_char)
+      end
+
+      guess_counts = guess.chars.tally
+      required.each do |letter, count|
+        halt_json(:bad_request, "Guess must contain #{letter.upcase}") if (guess_counts[letter] || 0) < count
+      end
+    end
+
+    def validate_insane_mode!(guess, prev_guesses)
+      validate_hard_mode!(guess, prev_guesses)
+      return if prev_guesses.empty?
+
+      forbidden_positions = Hash.new { |h, k| h[k] = [] }
+      known_absent = Set.new
+      max_counts = {}
+
+      prev_guesses.each do |word, mask|
+        word = word.to_s.downcase
+        mask = mask.to_s
+        abs_count = Hash.new(0)
+        pres_cor_count = Hash.new(0)
+
+        mask.each_char.with_index do |eval_char, i|
+          letter = word[i]
+          case eval_char
+          when "1"
+            forbidden_positions[letter] << i
+            pres_cor_count[letter] += 1
+          when "2"
+            pres_cor_count[letter] += 1
+          when "0"
+            abs_count[letter] += 1
+          end
+        end
+
+        abs_count.each_key do |letter|
+          if pres_cor_count[letter] == 0
+            known_absent.add(letter)
+          else
+            max_allowed = pres_cor_count[letter]
+            max_counts[letter] = [max_counts.fetch(letter, max_allowed), max_allowed].min
+          end
+        end
+      end
+
+      guess.each_char.with_index do |letter, i|
+        if forbidden_positions[letter].include?(i)
+          halt_json(:bad_request, "#{letter.upcase} can't be in #{ordinal(i + 1)} position")
+        end
+      end
+
+      guess_counts = guess.chars.tally
+
+      known_absent.each do |letter|
+        halt_json(:bad_request, "Guess cannot contain #{letter.upcase}") if guess_counts[letter]
+      end
+
+      max_counts.each do |letter, max|
+        halt_json(:bad_request, "Too many #{letter.upcase}s") if (guess_counts[letter] || 0) > max
+      end
+    end
+
+    def ordinal(n)
+      suffix = if [11, 12, 13].include?(n % 100)
+        "th"
+      else
+        case n % 10
+        when 1 then "st"
+        when 2 then "nd"
+        when 3 then "rd"
+        else "th"
+        end
+      end
+      "#{n}#{suffix}"
     end
 
     def answers_remaining_for(prev_guesses)
