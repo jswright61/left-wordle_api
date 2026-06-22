@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV=${1:-}
+if [[ -z "$ENV" ]]; then
+  echo "Usage: bin/deploy <staging|production>" >&2
+  exit 1
+fi
+
+case "$ENV" in
+  staging)    BRANCH="staging" ;;
+  production) BRANCH="main" ;;
+  *)
+    echo "Unknown environment: $ENV (must be staging or production)" >&2
+    exit 1
+    ;;
+esac
+
+VERSION=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+if [[ -z "$VERSION" ]]; then
+  echo "Error: tip of '$BRANCH' has no semantic version tag." >&2
+  echo "Tag the commit before deploying:" >&2
+  echo "  git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push paula vX.Y.Z" >&2
+  exit 1
+fi
+
+echo "Deploying $VERSION → $ENV"
+
+echo "→ Pushing $BRANCH + tags to paula..."
+git push paula "$BRANCH" --tags
+
+echo "→ Pushing $BRANCH + tags to origin (background)..."
+git push origin "$BRANCH" --tags &>/dev/null &
+disown $!
+
+echo "→ cap $ENV deploy..."
+bundle exec cap "$ENV" deploy
