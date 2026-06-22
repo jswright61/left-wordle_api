@@ -13,30 +13,55 @@ Covers both `staging.left-wordle.com` (static client) and `api-staging.left-word
 | Client deploy path | `/home/deploy/staging.left_wordle.com` |
 | API deploy path | `/home/deploy/staging_left_wordle_api` |
 | API systemd service | `left-wordle-api-staging` |
-| API `CORS_ORIGINS` | `https://staging.left-wordle.com` |
 | API `RACK_ENV` | `production` |
 | API `DEPLOY_TO` | `/home/deploy/staging_left_wordle_api` |
+| CORS config | `shared/config/app_config.yml` (symlinked per release) |
 
 ---
 
 ## Verifying API environment variables
 
-The env vars for Puma are set in the systemd service file, which is uploaded by `cap staging puma:setup`. If you edited the service template locally, you must re-run `puma:setup` and restart the service for changes to take effect.
+The env vars for Puma (`RACK_ENV`, `DEPLOY_TO`, `PATH`, `HOME`) are set in the systemd service file (`/etc/systemd/system/left-wordle-api-staging.service`). See `config/deploy/templates/left-wordle-api-staging.service` in the repo for the template.
 
 **Check what the running process actually has:**
 ```bash
 ssh deploy@paula-poundstone 'sudo systemctl show left-wordle-api-staging -p Environment'
 ```
 
-**Check the installed service file on the server:**
+**Check the installed service file:**
 ```bash
-ssh deploy@paula-poundstone 'grep -E "CORS|RACK_ENV|DEPLOY_TO" /etc/systemd/system/left-wordle-api-staging.service'
+ssh deploy@paula-poundstone 'grep -E "RACK_ENV|DEPLOY_TO|^Environment" /etc/systemd/system/left-wordle-api-staging.service'
 ```
 
-**If the env vars are wrong or missing:**
-1. Edit the template locally: `api/config/deploy/templates/left-wordle-api-staging.service`
-2. Upload it: `bundle exec cap staging puma:setup`
-3. Restart Puma: `bundle exec cap staging puma:restart`
+**If an env var is wrong:** edit the template locally, re-upload it (manually or via `bundle exec cap staging puma:setup`), then `bundle exec cap staging puma:restart`.
+
+---
+
+## Verifying the CORS config file
+
+CORS allowed origins are configured in `shared/config/app_config.yml` on the server. Capistrano symlinks this into each release as `config/app_config.yml`. The API reads it at startup.
+
+**Check the config file on the server:**
+```bash
+ssh deploy@paula-poundstone 'cat /home/deploy/staging_left_wordle_api/shared/config/app_config.yml'
+```
+
+Expected staging content:
+```yaml
+cors_origins:
+  - https://staging.left-wordle.com
+```
+
+**Check that the symlink exists in the current release:**
+```bash
+ssh deploy@paula-poundstone 'ls -la /home/deploy/staging_left_wordle_api/current/config/'
+```
+
+`app_config.yml` should appear as a symlink to `../../../shared/config/app_config.yml`.
+
+**If the file is missing or wrong:**
+1. Create or edit it: `ssh deploy@paula-poundstone 'nano /home/deploy/staging_left_wordle_api/shared/config/app_config.yml'`
+2. Restart Puma so the app re-reads it: `bundle exec cap staging puma:restart`
 
 ---
 
@@ -58,7 +83,7 @@ Access-Control-Allow-Headers: Content-Type
 Vary: Origin
 ```
 
-If `Access-Control-Allow-Origin` is absent, CORS_ORIGINS is not set correctly (or the service wasn't restarted after it was set).
+If `Access-Control-Allow-Origin` is absent, check the `app_config.yml` on the server and restart Puma.
 
 **Test a real GET request with an Origin header:**
 ```bash
@@ -69,16 +94,16 @@ curl -si https://api-staging.left-wordle.com/api/v1/health \
 Should return `200` with `Access-Control-Allow-Origin: https://staging.left-wordle.com`.
 
 **Common CORS mistakes:**
-- Trailing slash in `CORS_ORIGINS`: `https://staging.left-wordle.com/` — browsers send origins without a trailing slash, so this will never match
+- Trailing slash in `cors_origins`: `https://staging.left-wordle.com/` — browsers send origins without a trailing slash, so this will never match
 - Wrong protocol: `http://` vs `https://`
 - Typo in the subdomain
-- Service not restarted after changing the service file
+- Puma not restarted after editing `app_config.yml`
 
 ---
 
 ## Verifying the client configuration
 
-The client's `app_config.js` is generated and uploaded by Capistrano at deploy time. It is not in the git repo.
+The client's `app_config.js` is generated and uploaded by Capistrano at deploy time (from `client/lib/capistrano/tasks/app_config.rake`). It is not in the git repo.
 
 **Check what's actually deployed:**
 ```bash
@@ -90,16 +115,13 @@ Expected staging output:
 var defaults = {
     apiBaseUrl: "https://api-staging.left-wordle.com",
     apiCredentials: "omit",
-    apiGameplayEnabled: false,       // ⚠️ see note below
-    apiGameplayShadowMode: false,
-    ...
+    apiRequestTimeoutMs: 3000,
+    passkeyAuthEnabled: false,
+    serverSyncEnabled: false
 };
 ```
 
 The `apiBaseUrl` is set from `set :api_base_url` in `client/config/deploy/staging.rb`. If it's wrong, fix that file and redeploy.
-
-**⚠️ `apiGameplayEnabled` is currently `false` in all deployed environments.**
-This means the client does local evaluation only and never calls the API for gameplay. Hard mode and insane mode validation are completely bypassed because client-side validation was removed in favor of API validation. To enable API gameplay (and restore mode enforcement), `apiGameplayEnabled` must be set to `true` in `app_config.rake`. See [Enabling API Gameplay](#enabling-api-gameplay) below.
 
 ---
 
@@ -111,7 +133,7 @@ curl -s https://api-staging.left-wordle.com/api/v1/health
 # Expected: {"status":"ok"}
 ```
 
-**Test a guess (no mode validation, no CORS):**
+**Test a guess (no CORS):**
 ```bash
 curl -s -X POST https://api-staging.left-wordle.com/api/v1/game/guess \
   -H "Content-Type: application/json" \
@@ -190,28 +212,3 @@ ssh deploy@paula-poundstone 'ls /home/deploy/staging.left_wordle.com/current/'
 ```
 
 `current/` should contain `index.html`, `app_config.js`, `app_version.js`, `src/`, etc.
-
----
-
-## Enabling API gameplay
-
-To make the API authoritative for gameplay (required for hard/insane mode enforcement):
-
-1. In `client/lib/capistrano/tasks/app_config.rake`, make `apiGameplayEnabled` configurable per environment:
-
-```ruby
-config_js = <<~JS
-  ...
-  apiGameplayEnabled: #{fetch(:api_gameplay_enabled, false)},
-  ...
-JS
-```
-
-2. In `client/config/deploy/staging.rb`, add:
-```ruby
-set :api_gameplay_enabled, true
-```
-
-3. Redeploy the client: `bundle exec cap staging deploy`
-
-Until this is done, the client ignores the API for all gameplay evaluation and mode rules are not enforced on the deployed site.

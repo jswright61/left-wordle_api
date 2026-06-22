@@ -1,0 +1,15 @@
+# Left Wordle API — per-environment application configuration
+#
+# Copy this file to shared/config/app_config.yml on the server and fill in real values.
+# Capistrano symlinks it into each release as config/app_config.yml.
+# The real file is gitignored — do not commit it.
+#
+# One-time server setup:
+#   mkdir -p /home/deploy/<deploy_path>/shared/config
+#   cp api/config/app_config.yml.sample /home/deploy/<deploy_path>/shared/config/app_config.yml
+#   # then edit to set the real values
+
+# Exact origins the browser may send in an Origin header.
+# No trailing slash. Multiple origins can be listed.
+cors_origins:
+  - https://left-wordle.com

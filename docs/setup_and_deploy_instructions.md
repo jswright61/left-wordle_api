@@ -109,44 +109,65 @@ deploy ALL=(ALL) NOPASSWD: \
   /bin/systemctl status left-wordle-api-staging
 ```
 
-#### 6. Configure environment variables in the systemd service files
+#### 6. Install the systemd service files
 
-Before uploading the service files (config/deploy/templates/left-wordle-api.service,
-config/deploy/templates/left-wordle-api-staging.service), fill in the real values for
-`CORS_ORIGINS` (and the correct rv shims path if needed). The `Environment=` lines live in the `[Service]` block alongside the other env vars:
+The service files live in `config/deploy/templates/` in this repo. They are plain text — read them to understand exactly what they do before installing. Copy each one to `/etc/systemd/system/` on the server.
 
-```ini
-Environment=PATH=/home/deploy/.local/share/rv/shims:/usr/local/bin:/usr/bin:/bin
-Environment=CORS_ORIGINS=https://left-wordle.example.com
+**Production:**
+```bash
+# From your local machine:
+scp config/deploy/templates/left-wordle-api.service deploy@paula-poundstone:/tmp/
+ssh deploy@paula-poundstone 'sudo mv /tmp/left-wordle-api.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable left-wordle-api'
 ```
 
-Each `Environment=` directive is a separate line — there is no shell-style multi-var syntax.
-
-**Production** (`config/deploy/templates/left-wordle-api.service`):
-
-```
-Environment=CORS_ORIGINS=https://left-wordle.example.com
+**Staging:**
+```bash
+scp config/deploy/templates/left-wordle-api-staging.service deploy@paula-poundstone:/tmp/
+ssh deploy@paula-poundstone 'sudo mv /tmp/left-wordle-api-staging.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable left-wordle-api-staging'
 ```
 
-**Staging** (`config/deploy/templates/left-wordle-api-staging.service`):
+If you prefer, `cap staging puma:setup` (and `cap production puma:setup`) automate these same steps — they upload the file from `config/deploy/templates/`, move it to `/etc/systemd/system/`, and run `daemon-reload` + `enable`. There is no magic beyond that.
 
-```
-Environment=CORS_ORIGINS=https://staging.left-wordle.example.com
+If the PATH in the service file ever needs updating (e.g. after a Ruby version upgrade), edit the file in the repo and re-run the `scp` + `mv` steps above, then `sudo systemctl daemon-reload` and restart the service.
+
+#### 7. Create the application config file
+
+CORS origins and other per-environment settings live in `shared/config/app_config.yml` on the server. Capistrano symlinks it into each release as `config/app_config.yml`. The file is gitignored — create it once manually from the sample.
+
+**Production:**
+```bash
+ssh deploy@paula-poundstone 'mkdir -p /home/deploy/left_wordle_api/shared/config'
+scp config/app_config.yml.sample deploy@paula-poundstone:/home/deploy/left_wordle_api/shared/config/app_config.yml
+ssh deploy@paula-poundstone 'nano /home/deploy/left_wordle_api/shared/config/app_config.yml'
 ```
 
-#### 7. Upload the systemd service files and run the first deploy
+Set `cors_origins` to the production frontend URL:
+```yaml
+cors_origins:
+  - https://left-wordle.com
+```
+
+**Staging:**
+```bash
+ssh deploy@paula-poundstone 'mkdir -p /home/deploy/staging_left_wordle_api/shared/config'
+scp config/app_config.yml.sample deploy@paula-poundstone:/home/deploy/staging_left_wordle_api/shared/config/app_config.yml
+ssh deploy@paula-poundstone 'nano /home/deploy/staging_left_wordle_api/shared/config/app_config.yml'
+```
+
+Set `cors_origins` to the staging frontend URL:
+```yaml
+cors_origins:
+  - https://staging.left-wordle.com
+```
+
+#### 8. Run the first deploy
 
 ```bash
-cap production puma:setup
 cap production deploy
-
-cap staging puma:setup
 cap staging deploy
 ```
 
-`puma:setup` uploads the service file, runs `systemctl daemon-reload`, and enables the service. `deploy` does the first release and starts Puma.
-
-#### 8. Configure Caddy
+#### 9. Configure Caddy
 
 Replace the domain placeholders in `Caddyfile`, then copy it to the server:
 

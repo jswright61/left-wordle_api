@@ -12,10 +12,6 @@ Environment=HOME=/home/deploy
 Environment=PATH=/home/deploy/.local/share/rv/gems/ruby/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/lib/ruby/gems/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin:/home/deploy/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 Environment=RACK_ENV=production
 Environment=DEPLOY_TO=/home/deploy/left_wordle_api
-# Each env var gets its own Environment= line, e.g.:
-# Environment=PATH=/home/deploy/.local/share/rv/shims:/usr/local/bin:/usr/bin:/bin
-# Environment=CORS_ORIGINS=https://left-wordle.example.com
-Environment=CORS_ORIGINS=https://left-wordle.com
 
 WorkingDirectory=/home/deploy/left_wordle_api/current
 ExecStart=bundle exec puma -C config/puma.rb

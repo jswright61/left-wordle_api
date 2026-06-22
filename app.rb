@@ -17,7 +17,9 @@ class LeftWordleApi < Sinatra::Base
   enable :static
 
   configure do
-    set :allowed_origins, ENV.fetch("CORS_ORIGINS", "").split(",").map(&:strip).reject(&:empty?).freeze
+    cfg_file = File.join(File.expand_path(__dir__), "config", "app_config.yml")
+    app_cfg = File.exist?(cfg_file) ? (YAML.load_file(cfg_file) || {}) : {}
+    set :allowed_origins, Array(app_cfg["cors_origins"]).map(&:strip).reject(&:empty?).freeze
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
