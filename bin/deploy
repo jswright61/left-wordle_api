@@ -3,7 +3,7 @@ set -euo pipefail
 
 ENV=${1:-}
 if [[ -z "$ENV" ]]; then
-  echo "Usage: bin/deploy <staging|production>" >&2
+  echo "Usage: bin/deploy <staging|production> [vX.Y.Z]" >&2
   exit 1
 fi
 
@@ -16,22 +16,51 @@ case "$ENV" in
     ;;
 esac
 
-VERSION=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-if [[ -z "$VERSION" ]]; then
-  echo "Error: tip of '$BRANCH' has no semantic version tag." >&2
-  echo "Tag the commit before deploying:" >&2
-  echo "  git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push paula vX.Y.Z" >&2
-  exit 1
+TAG=${2:-}
+
+if [[ -n "$TAG" ]]; then
+  if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: '$TAG' is not a valid version tag (expected vX.Y.Z)" >&2
+    exit 1
+  fi
+  if ! git rev-parse --verify "refs/tags/$TAG" &>/dev/null; then
+    echo "Error: tag '$TAG' does not exist" >&2
+    exit 1
+  fi
+  VERSION="$TAG"
+
+  echo "Deploying $VERSION → $ENV (pinned)"
+
+  echo "→ Pushing $VERSION to paula..."
+  git push paula "$VERSION"
+
+  echo "→ Pushing $VERSION to origin (background)..."
+  git push origin "$VERSION" &>/dev/null &
+  disown $!
+else
+  VERSION=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  if [[ -z "$VERSION" ]]; then
+    echo "Error: tip of '$BRANCH' has no semantic version tag." >&2
+    echo "Tag the commit before deploying:" >&2
+    echo "  git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push paula vX.Y.Z" >&2
+    exit 1
+  fi
+
+  echo "Deploying $VERSION → $ENV"
+
+  echo "→ Pushing $BRANCH + tags to paula..."
+  git push paula "$BRANCH" --tags
+
+  echo "→ Pushing $BRANCH + tags to origin (background)..."
+  git push origin "$BRANCH" --tags &>/dev/null &
+  disown $!
 fi
 
-echo "Deploying $VERSION → $ENV"
-
-echo "→ Pushing $BRANCH + tags to paula..."
-git push paula "$BRANCH" --tags
-
-echo "→ Pushing $BRANCH + tags to origin (background)..."
-git push origin "$BRANCH" --tags &>/dev/null &
-disown $!
+if [[ -n "$TAG" ]]; then
+  cap_env=(env "DEPLOY_TAG=$VERSION")
+else
+  cap_env=()
+fi
 
 echo "→ cap $ENV deploy..."
-bundle exec cap "$ENV" deploy
+"${cap_env[@]}" bundle exec cap "$ENV" deploy
