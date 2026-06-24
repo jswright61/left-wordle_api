@@ -63,4 +63,4 @@ else
 fi
 
 echo "→ cap $ENV deploy..."
-"${cap_env[@]}" bundle exec cap "$ENV" deploy
+"${cap_env[@]+"${cap_env[@]}"}" bundle exec cap "$ENV" deploy
