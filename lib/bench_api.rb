@@ -1,6 +1,7 @@
 #!/Users/scott/.local/ruby/ruby-4.0-script
 # frozen_string_literal: true
 
+require "date"
 require "open3"
 require "json"
 require "optparse"
@@ -10,20 +11,22 @@ require "csv"
 API_BASE   = "https://api-staging.left-wordle.com"
 ORIGIN     = "https://staging.left-wordle.com"
 ENDPOINT   = "/api/v1/game/guess"
-BODY       = JSON.generate(guess: "crane", mode: "regular", row_index: 0, prev_guesses: [])
+BODY       = JSON.generate(guess: "crane", mode: "regular", row_index: 0, prev_guesses: [], date: Date.today.iso8601)
 # ──────────────────────────────────────────────────────────────────────────────
 
-defaults = { iterations: 5, think_time: 2, csv_file: nil }
+defaults = { iterations: 5, think_time: 2, csv_file: nil, include_options: false }
 
 OptionParser.new do |o|
   o.on("--iterations N",  Integer, "Number of iterations   (default: #{defaults[:iterations]})") { |n| defaults[:iterations] = n }
   o.on("--think-time N",  Integer, "Seconds between guesses (default: #{defaults[:think_time]})") { |n| defaults[:think_time] = n }
   o.on("--csv-file FILE",          "Write results to CSV file") { |f| defaults[:csv_file] = f }
+  o.on("--include-options-request", "Also time the OPTIONS preflight (default: POST only)") { defaults[:include_options] = true }
 end.parse!
 
-iterations = defaults[:iterations]
-think_time = defaults[:think_time]
-csv_path   = defaults[:csv_file]
+iterations      = defaults[:iterations]
+think_time      = defaults[:think_time]
+csv_path        = defaults[:csv_file]
+include_options = defaults[:include_options]
 
 URL = "#{API_BASE}#{ENDPOINT}"
 
@@ -93,16 +96,25 @@ def averages(results)
   keys.each_with_object({}) { |k, h| h[k] = results.sum { _1[k] } / results.size }
 end
 
-def per_guess_avg(opt_results, post_results)
-  opt_results.zip(post_results).sum { |o, p| o[:total_ms] + p[:total_ms] } / opt_results.size
+def per_guess_avg(opt_results, post_results, include_options)
+  if include_options
+    opt_results.zip(post_results).sum { |o, p| o[:total_ms] + p[:total_ms] } / opt_results.size
+  else
+    post_results.sum { _1[:total_ms] } / post_results.size
+  end
 end
 
-def print_running_avgs(label, opt_results, post_results)
-  opt_avg  = averages(opt_results)
+def print_running_avgs(label, opt_results, post_results, include_options)
   post_avg = averages(post_results)
-  combined = per_guess_avg(opt_results, post_results)
-  puts format("  [%-8s]  per-guess:%7.1fms  OPTIONS:%7.1fms  POST:%7.1fms",
-    label, combined, opt_avg[:total_ms], post_avg[:total_ms])
+  combined = per_guess_avg(opt_results, post_results, include_options)
+  if include_options
+    opt_avg = averages(opt_results)
+    puts format("  [%-8s]  per-guess:%7.1fms  OPTIONS:%7.1fms  POST:%7.1fms",
+      label, combined, opt_avg[:total_ms], post_avg[:total_ms])
+  else
+    puts format("  [%-8s]  per-guess:%7.1fms  POST:%7.1fms",
+      label, combined, post_avg[:total_ms])
+  end
 end
 
 CSV_HEADERS = %w[iteration verb status dns_ms tcp_ms tls_ms ttfb_ms total_ms].freeze
@@ -127,12 +139,14 @@ iterations.times do |i|
   n = i + 1
   puts "\nIteration #{n}:"
 
-  opt = measure_options(URL)
-  options_results << opt
-  puts row("OPTIONS", opt)
-  if csv_io
-    csv_io << csv_row(n, "OPTIONS", opt)
-    csv_io.flush
+  if include_options
+    opt = measure_options(URL)
+    options_results << opt
+    puts row("OPTIONS", opt)
+    if csv_io
+      csv_io << csv_row(n, "OPTIONS", opt)
+      csv_io.flush
+    end
   end
 
   pst = measure_post(URL, BODY)
@@ -145,8 +159,8 @@ iterations.times do |i|
 
   if n % 10 == 0
     puts "  #{"─" * 76}"
-    print_running_avgs("last 10", options_results.last(10), post_results.last(10))
-    print_running_avgs("overall", options_results, post_results)
+    print_running_avgs("last 10", options_results.last(10), post_results.last(10), include_options)
+    print_running_avgs("overall", options_results, post_results, include_options)
     puts "  #{"─" * 76}"
   end
 
@@ -161,6 +175,12 @@ csv_io&.close
 
 puts "\n#{"=" * 80}"
 puts "Final averages over #{iterations} iterations:"
-puts row("OPTIONS", averages(options_results), status: false)
-puts row("POST",    averages(post_results),    status: false)
-puts format("\n  Per-guess round-trip avg (OPTIONS + POST): %.1fms", per_guess_avg(options_results, post_results))
+if include_options
+  puts row("OPTIONS", averages(options_results), status: false)
+end
+puts row("POST", averages(post_results), status: false)
+if include_options
+  puts format("\n  Per-guess round-trip avg (OPTIONS + POST): %.1fms", per_guess_avg(options_results, post_results, true))
+else
+  puts format("\n  Per-guess round-trip avg (POST only): %.1fms", per_guess_avg([], post_results, false))
+end

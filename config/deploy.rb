@@ -3,7 +3,7 @@
 lock "~> 3.19"
 
 set :application, "left_wordle_api"
-set :repo_url, "ssh://git@codeberg.org/jswright61/left_wordle_api.git"
+set :repo_url, "deploy@paula-poundstone:/home/deploy/git/left_wordle_api.git"
 
 # rv does not use a shims directory — it adds the actual Ruby binary paths to PATH.
 # SSH non-interactive sessions skip .zshrc, so we set those paths explicitly here.
