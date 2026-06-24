@@ -1,6 +1,6 @@
 # Staging Troubleshooting Guide
 
-Covers both `staging.left-wordle.com` (static client) and `api-staging.left-wordle.com` (Puma/Sinatra API).
+Covers `staging.left-wordle.com`, which serves both the static client and the Puma/Sinatra API under a single domain. Caddy routes `/api/*` to Puma and everything else to the static file tree.
 
 ---
 
@@ -9,8 +9,8 @@ Covers both `staging.left-wordle.com` (static client) and `api-staging.left-word
 | | Staging |
 |---|---|
 | Client URL | `https://staging.left-wordle.com` |
-| API URL | `https://api-staging.left-wordle.com` |
-| Client deploy path | `/home/deploy/staging.left_wordle.com` |
+| API URL | `https://staging.left-wordle.com/api/v1/...` |
+| Client deploy path | `/home/deploy/staging.left-wordle.com` |
 | API deploy path | `/home/deploy/staging_left_wordle_api` |
 | API systemd service | `left-wordle-api-staging` |
 | API `RACK_ENV` | `production` |
@@ -69,7 +69,7 @@ ssh deploy@paula-poundstone 'ls -la /home/deploy/staging_left_wordle_api/current
 
 **Test a preflight request directly:**
 ```bash
-curl -si -X OPTIONS https://api-staging.left-wordle.com/api/v1/game/guess \
+curl -si -X OPTIONS https://staging.left-wordle.com/api/v1/game/guess \
   -H "Origin: https://staging.left-wordle.com" \
   -H "Access-Control-Request-Method: POST" \
   -H "Access-Control-Request-Headers: Content-Type"
@@ -87,7 +87,7 @@ If `Access-Control-Allow-Origin` is absent, check the `app_config.yml` on the se
 
 **Test a real GET request with an Origin header:**
 ```bash
-curl -si https://api-staging.left-wordle.com/api/v1/health \
+curl -si https://staging.left-wordle.com/api/v1/health \
   -H "Origin: https://staging.left-wordle.com"
 ```
 
@@ -107,13 +107,13 @@ The client's `app_config.js` is generated and uploaded by Capistrano at deploy t
 
 **Check what's actually deployed:**
 ```bash
-ssh deploy@paula-poundstone 'cat /home/deploy/staging.left_wordle.com/current/app_config.js'
+ssh deploy@paula-poundstone 'cat /home/deploy/staging.left-wordle.com/current/app_config.js'
 ```
 
 Expected staging output:
 ```js
 var defaults = {
-    apiBaseUrl: "https://api-staging.left-wordle.com",
+    apiBaseUrl: "https://staging.left-wordle.com",
     apiCredentials: "omit",
     apiRequestTimeoutMs: 3000,
     passkeyAuthEnabled: false,
@@ -129,20 +129,20 @@ The `apiBaseUrl` is set from `set :api_base_url` in `client/config/deploy/stagin
 
 **Health check:**
 ```bash
-curl -s https://api-staging.left-wordle.com/api/v1/health
+curl -s https://staging.left-wordle.com/api/v1/health
 # Expected: {"status":"ok"}
 ```
 
 **Test a guess (no CORS):**
 ```bash
-curl -s -X POST https://api-staging.left-wordle.com/api/v1/game/guess \
+curl -s -X POST https://staging.left-wordle.com/api/v1/game/guess \
   -H "Content-Type: application/json" \
   -d '{"date":"2021-06-19","guess":"crane","row_index":0,"mode":"regular","prev_guesses":[]}'
 ```
 
 **Test a guess from the browser's perspective (with CORS):**
 ```bash
-curl -s -X POST https://api-staging.left-wordle.com/api/v1/game/guess \
+curl -s -X POST https://staging.left-wordle.com/api/v1/game/guess \
   -H "Content-Type: application/json" \
   -H "Origin: https://staging.left-wordle.com" \
   -d '{"date":"2021-06-19","guess":"crane","row_index":0,"mode":"regular","prev_guesses":[]}'
@@ -154,17 +154,36 @@ The second request should include `Access-Control-Allow-Origin: https://staging.
 
 ## Checking Caddy
 
+The staging Caddy block routes `/api/*` to Puma and serves everything else as static files:
+
+```
+staging.left-wordle.com {
+    tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
+
+    handle /api/* {
+        reverse_proxy unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
+    }
+
+    handle {
+        root * /home/deploy/staging.left-wordle.com/current
+        file_server
+        try_files {path} {path}.html {path}/index.html
+    }
+
+    log {
+        output file /var/log/caddy/left-wordle-staging.log
+    }
+}
+```
+
+**`handle` vs `handle_path`:** Use `handle /api/*`, not `handle_path /api/*`. `handle_path` strips the matched prefix before proxying — so `/api/v1/game/guess` would arrive at Sinatra as `/v1/game/guess`, matching no route and returning 404. `handle` passes the path through unchanged.
+
 **Caddy status:**
 ```bash
 ssh deploy@paula-poundstone 'sudo systemctl status caddy'
 ```
 
-**Tail the staging API log:**
-```bash
-ssh deploy@paula-poundstone 'sudo tail -f /var/log/caddy/left-wordle-api-staging.log'
-```
-
-**Tail the staging client log:**
+**Tail the staging log:**
 ```bash
 ssh deploy@paula-poundstone 'sudo tail -f /var/log/caddy/left-wordle-staging.log'
 ```
@@ -207,8 +226,8 @@ The socket (`puma.sock`) must exist and be readable by the `caddy` user (via the
 
 **Check the symlink and release files:**
 ```bash
-ssh deploy@paula-poundstone 'ls -la /home/deploy/staging.left_wordle.com/'
-ssh deploy@paula-poundstone 'ls /home/deploy/staging.left_wordle.com/current/'
+ssh deploy@paula-poundstone 'ls -la /home/deploy/staging.left-wordle.com/'
+ssh deploy@paula-poundstone 'ls /home/deploy/staging.left-wordle.com/current/'
 ```
 
 `current/` should contain `index.html`, `app_config.js`, `app_version.js`, `src/`, etc.
