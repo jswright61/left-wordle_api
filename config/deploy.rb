@@ -21,3 +21,11 @@ set :bundle_path, -> { shared_path.join("bundle") }
 set :bundle_flags, "--quiet"
 
 set :keep_releases, 5
+
+set :app_version, -> {
+  tag = `git describe --tags --exact-match 2>/dev/null`.strip
+  raise "Current commit has no exact version tag — tag before deploying" if tag.empty?
+  tag
+}
+
+set :release_timestamp, -> { Time.now.utc.strftime("%Y-%m-%d_%H.%M.%S__#{fetch(:app_version)}") }
