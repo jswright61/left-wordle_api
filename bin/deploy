@@ -31,8 +31,8 @@ if [[ -n "$TAG" ]]; then
 
   echo "Deploying $VERSION → $ENV (pinned)"
 
-  echo "→ Pushing $VERSION to paula..."
-  git push paula "$VERSION"
+  echo "→ Pushing $VERSION to paula-poundstone..."
+  git push paula-poundstone "$VERSION"
 
   echo "→ Pushing $VERSION to origin (background)..."
   git push origin "$VERSION" &>/dev/null &
@@ -42,14 +42,14 @@ else
   if [[ -z "$VERSION" ]]; then
     echo "Error: tip of '$BRANCH' has no semantic version tag." >&2
     echo "Tag the commit before deploying:" >&2
-    echo "  git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push paula vX.Y.Z" >&2
+    echo "  git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push paula-poundstone vX.Y.Z" >&2
     exit 1
   fi
 
   echo "Deploying $VERSION → $ENV"
 
-  echo "→ Pushing $BRANCH + tags to paula..."
-  git push paula "$BRANCH" --tags
+  echo "→ Pushing $BRANCH + tags to paula-poundstone..."
+  git push paula-poundstone "$BRANCH" --tags
 
   echo "→ Pushing $BRANCH + tags to origin (background)..."
   git push origin "$BRANCH" --tags &>/dev/null &
