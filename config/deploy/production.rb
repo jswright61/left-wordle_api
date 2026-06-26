@@ -4,7 +4,7 @@ set :branch, "main"
 set :deploy_to, "/home/deploy/left_wordle_api"
 set :puma_service, "left-wordle-api"
 
-Environment=CORS_ORIGINS=https://left-wordle.com
+Environment=CORS_ORIGINS="https://left-wordle.com"
 
 server "paula-poundstone",
   user: "deploy",
