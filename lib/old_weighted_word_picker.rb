@@ -4,13 +4,7 @@ require "yaml"
 # Picks words from a weighted list, where weight decays sharply right after
 # a word is used and then recovers gradually over subsequent days. Words
 # used more times recover more slowly.
-
-
-# TODO simplify this process used words get a penalty = to their default weight plus 1
-# Subsequent times, 2x default weight +1, 4x default_weight +1, etc
-# important if penalty is added to current penalty
-
-class WeightedWordPicker
+class OldWeightedWordPicker
   DEFAULT_CONFIG_PATH = "config/weighted_word_picker.yml"
 
   # Fallback values, used for any key missing from the config source.
