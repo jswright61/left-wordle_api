@@ -5,6 +5,11 @@ require_relative "test_helper"
 class AppTest < Minitest::Test
   include ApiTest
 
+  def setup
+    origins = ENV["CORS_ORIGINS"].to_s.split(",").map(&:strip).reject(&:empty?)
+    LeftWordleApi.set :allowed_origins, origins.freeze
+  end
+
   def test_get_health
     get "/api/v1/health"
 
@@ -335,15 +340,11 @@ class AppTest < Minitest::Test
   end
 
   def test_browser_request_with_allowed_origin_needs_no_bearer
-    prev_origins = LeftWordleApi.settings.allowed_origins
-    LeftWordleApi.set :allowed_origins, ["https://left-wordle.example"].freeze
     with_server_api_token do
       get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
 
       assert last_response.ok?
     end
-  ensure
-    LeftWordleApi.set :allowed_origins, prev_origins
   end
 
   def test_post_diagnostics_returns_413_for_oversized_body
