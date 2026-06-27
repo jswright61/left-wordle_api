@@ -15,9 +15,8 @@ cors_origins:
   - https://left-wordle.com
 
 # Bearer token required for server-to-server requests (no Origin header).
-# When set, all Origin-less requests must include: Authorization: Bearer <token>
-# Omit or leave blank to keep the current open behavior (safe behind a firewall).
-# Has no effect in development mode.
+# All Origin-less requests must include: Authorization: Bearer <token>
+# In development and test, "1234" is always accepted as a convenience token.
 # server_api_token: your_secret_token_here
 
 # SMTP credentials for the POST /api/v1/diagnostics endpoint.

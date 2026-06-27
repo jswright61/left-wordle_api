@@ -8,6 +8,7 @@ class AppTest < Minitest::Test
   def setup
     origins = ENV["CORS_ORIGINS"].to_s.split(",").map(&:strip).reject(&:empty?)
     LeftWordleApi.set :allowed_origins, origins.freeze
+    header "Authorization", "Bearer 1234"
   end
 
   def test_get_health
@@ -81,7 +82,8 @@ class AppTest < Minitest::Test
     assert_equal "Origin not allowed", json_response.fetch("detail")
   end
 
-  def test_request_without_an_origin_is_allowed
+  def test_origin_less_request_accepts_dev_bearer_token
+    # setup already sets "Bearer 1234", which is always valid in test/development
     get "/api/v1/health"
 
     assert last_response.ok?
@@ -314,21 +316,19 @@ class AppTest < Minitest::Test
     assert_equal 404, last_response.status
   end
 
-  def test_origin_less_request_requires_bearer_when_token_configured
-    with_server_api_token do
-      get "/api/v1/health"
+  def test_origin_less_request_without_bearer_returns_401
+    header "Authorization", nil
+    get "/api/v1/health"
 
-      assert_equal 401, last_response.status
-      assert_equal "Authorization required", json_response.fetch("detail")
-    end
+    assert_equal 401, last_response.status
+    assert_equal "Authorization required", json_response.fetch("detail")
   end
 
   def test_origin_less_request_rejects_wrong_bearer_token
-    with_server_api_token do
-      get "/api/v1/health", {}, {"HTTP_AUTHORIZATION" => "Bearer wrong-token"}
+    get "/api/v1/health", {}, {"HTTP_AUTHORIZATION" => "Bearer wrong-token"}
 
-      assert_equal 401, last_response.status
-    end
+    assert_equal 401, last_response.status
+    assert_equal "Authorization required", json_response.fetch("detail")
   end
 
   def test_origin_less_request_accepts_correct_bearer_token
@@ -340,11 +340,16 @@ class AppTest < Minitest::Test
   end
 
   def test_browser_request_with_allowed_origin_needs_no_bearer
-    with_server_api_token do
-      get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
+    get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
 
-      assert last_response.ok?
-    end
+    assert last_response.ok?
+  end
+
+  def test_request_with_invalid_origin_returns_403_not_401
+    get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://unrelated.example", "HTTP_AUTHORIZATION" => nil}
+
+    assert_equal 403, last_response.status
+    assert_equal "Origin not allowed", json_response.fetch("detail")
   end
 
   def test_post_diagnostics_returns_413_for_oversized_body

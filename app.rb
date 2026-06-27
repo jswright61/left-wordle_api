@@ -12,7 +12,6 @@ require_relative "lib/verbose_logger"
 
 class LeftWordleApi < Sinatra::Base
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
-  DEBUG_BEARER_TOKEN = "lw_api_ba1ae52dcec8187b3e587f4ccd23067a2732d077f9161389557e37e5d3605291"
   MAX_DIAGNOSTICS_BODY_BYTES = 512 * 1024
 
   set :root, File.expand_path(__dir__)
@@ -80,7 +79,6 @@ class LeftWordleApi < Sinatra::Base
   end
 
   post "/api/v1/debug/verbose" do
-    verbose_logging_authorized!
     payload = request_payload
     enabled = payload["enabled"]
     halt_json(:bad_request, "enabled must be true or false") unless [true, false].include?(enabled)
@@ -392,25 +390,24 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "Row index must be an integer")
     end
 
-    def verbose_logging_authorized!
-      return if ENV["RACK_ENV"] == "development"
-      auth = request.env["HTTP_AUTHORIZATION"]
-      return if auth&.start_with?("Bearer ") && auth.delete_prefix("Bearer ") == DEBUG_BEARER_TOKEN
-      halt_json(:unauthorized, "Unauthorized")
-    end
-
     def validate_request_origin!
       origin = request.env["HTTP_ORIGIN"]
-      if origin.nil?
-        server_token = settings.server_api_token.to_s.strip
-        if server_token.length.positive? && ENV["RACK_ENV"] != "development"
-          auth = request.env["HTTP_AUTHORIZATION"]
-          return if auth&.start_with?("Bearer ") && auth.delete_prefix("Bearer ") == server_token
-          halt_json(:unauthorized, "Authorization required")
-        end
+
+      if origin
+        halt_json(:forbidden, "Origin not allowed") unless settings.allowed_origins.include?(origin)
         return
       end
-      halt_json(:forbidden, "Origin not allowed") unless settings.allowed_origins.include?(origin)
+
+      auth = request.env["HTTP_AUTHORIZATION"]
+      token = auth&.start_with?("Bearer ") ? auth.delete_prefix("Bearer ") : nil
+      return if token && valid_api_token?(token)
+      halt_json(:unauthorized, "Authorization required")
+    end
+
+    def valid_api_token?(token)
+      return true if %w[development test].include?(ENV["RACK_ENV"]) && token == "1234"
+      server_token = settings.server_api_token.to_s.strip
+      server_token.length.positive? && token == server_token
     end
 
     def guesser_protected!
