@@ -82,6 +82,29 @@ The latest available date is determined by the current time at UTC+14 (the world
 
 ---
 
+### POST /api/v1/diagnostics
+
+Accepts a client settings snapshot as a JSON body and emails it to the developers as an attachment for troubleshooting.
+
+**Request Body** (`application/json`)
+
+Any valid JSON object. Typically a full dump of the client's localStorage, keyed by storage key name.
+
+**Response 200**
+```json
+{ "status": "sent" }
+```
+
+**Error Responses**
+
+| Status | `detail` | Condition |
+|--------|----------|-----------|
+| 400 | `Request body is required` | Empty body |
+| 400 | `Request body must be valid JSON` | Body is not parseable JSON |
+| 503 | `Diagnostics email is not configured` | `smtp_username` or `smtp_password` missing from server config |
+
+---
+
 ### POST /api/v1/game/guess
 
 Evaluates a guess against the puzzle answer for a given date, enforcing mode rules and optionally returning the number of answers still possible.

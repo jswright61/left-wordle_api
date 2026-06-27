@@ -19,6 +19,7 @@ gem "standard", "~> 1.50", require: false
 
 gem "rackup", "~> 2.3"
 gem "puma", "~> 8.0"
+gem "mail", "~> 2.8"
 
 group :development do
   gem "capistrano", "~> 3.19", require: false

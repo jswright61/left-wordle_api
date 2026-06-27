@@ -13,3 +13,16 @@
 # No trailing slash. Multiple origins can be listed.
 cors_origins:
   - https://left-wordle.com
+
+# Bearer token required for server-to-server requests (no Origin header).
+# When set, all Origin-less requests must include: Authorization: Bearer <token>
+# Omit or leave blank to keep the current open behavior (safe behind a firewall).
+# Has no effect in development mode.
+# server_api_token: your_secret_token_here
+
+# SMTP credentials for the POST /api/v1/diagnostics endpoint.
+# Use an app-specific password from your Fastmail account settings.
+# smtp_from defaults to smtp_username when omitted.
+smtp_username: your_fastmail_address@fastmail.com
+smtp_password: your_app_specific_password
+# smtp_from: optional_from_override@example.com

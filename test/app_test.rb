@@ -309,6 +309,89 @@ class AppTest < Minitest::Test
     assert_equal 404, last_response.status
   end
 
+  def test_origin_less_request_requires_bearer_when_token_configured
+    with_server_api_token do
+      get "/api/v1/health"
+
+      assert_equal 401, last_response.status
+      assert_equal "Authorization required", json_response.fetch("detail")
+    end
+  end
+
+  def test_origin_less_request_rejects_wrong_bearer_token
+    with_server_api_token do
+      get "/api/v1/health", {}, {"HTTP_AUTHORIZATION" => "Bearer wrong-token"}
+
+      assert_equal 401, last_response.status
+    end
+  end
+
+  def test_origin_less_request_accepts_correct_bearer_token
+    with_server_api_token("test-server-token") do
+      get "/api/v1/health", {}, {"HTTP_AUTHORIZATION" => "Bearer test-server-token"}
+
+      assert last_response.ok?
+    end
+  end
+
+  def test_browser_request_with_allowed_origin_needs_no_bearer
+    prev_origins = LeftWordleApi.settings.allowed_origins
+    LeftWordleApi.set :allowed_origins, ["https://left-wordle.example"].freeze
+    with_server_api_token do
+      get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
+
+      assert last_response.ok?
+    end
+  ensure
+    LeftWordleApi.set :allowed_origins, prev_origins
+  end
+
+  def test_post_diagnostics_returns_413_for_oversized_body
+    oversized = "x" * (513 * 1024)
+    post "/api/v1/diagnostics", oversized, {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 413, last_response.status
+    assert_match(/512 KB/, json_response.fetch("detail"))
+  end
+
+  def test_post_diagnostics_returns_400_for_empty_body
+    post "/api/v1/diagnostics", "", {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 400, last_response.status
+    assert_equal "Request body is required", json_response.fetch("detail")
+  end
+
+  def test_post_diagnostics_returns_400_for_invalid_json
+    post "/api/v1/diagnostics", "{bad json", {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 400, last_response.status
+    assert_equal "Request body must be valid JSON", json_response.fetch("detail")
+  end
+
+  def test_post_diagnostics_returns_503_when_smtp_not_configured
+    post_json "/api/v1/diagnostics", {preferences: {}}
+
+    assert_equal 503, last_response.status
+    assert_match(/not configured/, json_response.fetch("detail"))
+  end
+
+  def test_post_diagnostics_sends_email_and_returns_200_when_configured
+    Mail::TestMailer.deliveries.clear
+    with_smtp_configured do
+      post_json "/api/v1/diagnostics", {preferences: {darkTheme: true}, device_id: "abc"}
+
+      assert_equal 200, last_response.status
+      assert_equal "sent", json_response.fetch("status")
+      assert_equal 1, Mail::TestMailer.deliveries.length
+
+      mail = Mail::TestMailer.deliveries.first
+      assert_equal "Left Wordle Diagnostics Report", mail.subject
+      assert_equal ["left.wordle@wrightzone.com"], mail.to
+      assert mail.has_attachments?
+      assert_match(/left_wordle_diagnostics_.*\.json/, mail.attachments.first.filename)
+    end
+  end
+
   private
 
   def answer_for(date)
@@ -319,6 +402,24 @@ class AppTest < Minitest::Test
   def evaluation_string(eval_array)
     map = {LeftWordle::Game::ABSENT => "0", LeftWordle::Game::PRESENT => "1", LeftWordle::Game::CORRECT => "2"}
     eval_array.map { |v| map[v] }.join
+  end
+
+  def with_server_api_token(token = "test-server-token")
+    LeftWordleApi.set :server_api_token, token
+    yield
+  ensure
+    LeftWordleApi.set :server_api_token, nil
+  end
+
+  def with_smtp_configured
+    LeftWordleApi.set :smtp_username, "sender@example.com"
+    LeftWordleApi.set :smtp_password, "test-password"
+    LeftWordleApi.set :smtp_from, "sender@example.com"
+    yield
+  ensure
+    LeftWordleApi.set :smtp_username, nil
+    LeftWordleApi.set :smtp_password, nil
+    LeftWordleApi.set :smtp_from, nil
   end
 
   def answers_remaining_count(guess_answer_pairs)
