@@ -46,6 +46,85 @@ Returns application version information.
 
 ---
 
+### GET /api/v1/game/answer
+
+Returns an encrypted representation of the puzzle answer for a given date. The answer is XOR-encrypted with a shared key so that the plaintext is not stored in client game state.
+
+**Query Parameters**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
+
+**Response 200**
+```json
+{
+  "encrypted_answer": "1b38500c3c",
+  "puzzle_num": 0,
+  "date": "2021-06-19"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `encrypted_answer` | string | Hex-encoded XOR-encrypted answer; decryptable client-side with the shared key |
+| `puzzle_num` | integer | Days since puzzle epoch |
+| `date` | string | Echoes the requested date |
+
+**Error Responses**
+
+| Status | `detail` | Condition |
+|--------|----------|-----------|
+| 400 | `Date is required` | `date` param missing |
+| 400 | `Date must use YYYY-MM-DD format` | Unparseable date string |
+| 400 | `Date must be a valid calendar date` | Structurally valid but impossible date |
+| 400 | `Date cannot be later than YYYY-MM-DD` | Date is in the future |
+
+---
+
+### POST /api/v1/game/remaining_counts
+
+Returns the number of possible answers remaining after each guess in a completed game, for use in share text. Accepts the full list of guesses and evaluations and computes remaining counts cumulatively.
+
+**Request Body** (`application/json`)
+
+```json
+{
+  "date": "2021-06-19",
+  "guesses": [["crane", "01200"], ["slate", "00110"]]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
+| `guesses` | array | Yes | Array of `[word, pattern]` pairs for all guesses. Each pattern is a 5-character digit string (`0`=absent, `1`=present, `2`=correct). |
+
+**Response 200**
+```json
+{
+  "date": "2021-06-19",
+  "remaining_counts": [145, 23]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `date` | string | Echoes the requested date |
+| `remaining_counts` | array | Integer count of possible answers remaining after each guess, in the same order as the request |
+
+**Error Responses**
+
+| Status | `detail` | Condition |
+|--------|----------|-----------|
+| 400 | `Date is required` | `date` field missing |
+| 400 | `Date must use YYYY-MM-DD format` | Unparseable date string |
+| 400 | `Date must be a valid calendar date` | Impossible calendar date |
+| 400 | `Date cannot be later than YYYY-MM-DD` | Future date |
+| 400 | `guesses must be an array of [word, pattern] pairs` | `guesses` is malformed |
+
+---
+
 ### GET /api/v1/game/puzzle
 
 Returns puzzle metadata for a given date.
@@ -79,6 +158,29 @@ Returns puzzle metadata for a given date.
 | 400 | `Date cannot be later than YYYY-MM-DD` | Date is in the future beyond the latest available puzzle date |
 
 The latest available date is determined by the current time at UTC+14 (the world's furthest-ahead timezone), so all time zones have access to the same puzzle on the intended calendar day.
+
+---
+
+### POST /api/v1/diagnostics
+
+Accepts a client settings snapshot as a JSON body and emails it to the developers as an attachment for troubleshooting.
+
+**Request Body** (`application/json`)
+
+Any valid JSON object. Typically a full dump of the client's localStorage, keyed by storage key name.
+
+**Response 200**
+```json
+{ "status": "sent" }
+```
+
+**Error Responses**
+
+| Status | `detail` | Condition |
+|--------|----------|-----------|
+| 400 | `Request body is required` | Empty body |
+| 400 | `Request body must be valid JSON` | Body is not parseable JSON |
+| 503 | `Diagnostics email is not configured` | `smtp_username` or `smtp_password` missing from server config |
 
 ---
 

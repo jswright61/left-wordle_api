@@ -2,6 +2,7 @@
 
 require "bcrypt"
 require "json"
+require "mail"
 require "sinatra/base"
 require "yaml"
 
@@ -10,8 +11,9 @@ require_relative "lib/guesser/solve_engine"
 require_relative "lib/verbose_logger"
 
 class LeftWordleApi < Sinatra::Base
+  ANSWER_XOR_KEY = "xQ7mN2vK9pL4wR8tY1sB6dF3hJ0cG5eA"
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
-  DEBUG_BEARER_TOKEN = "lw_api_ba1ae52dcec8187b3e587f4ccd23067a2732d077f9161389557e37e5d3605291"
+  MAX_DIAGNOSTICS_BODY_BYTES = 512 * 1024
 
   set :root, File.expand_path(__dir__)
   enable :static
@@ -20,6 +22,11 @@ class LeftWordleApi < Sinatra::Base
     cfg_file = File.join(File.expand_path(__dir__), "config", "app_config.yml")
     app_cfg = File.exist?(cfg_file) ? (YAML.load_file(cfg_file) || {}) : {}
     set :allowed_origins, Array(app_cfg["cors_origins"]).map(&:strip).reject(&:empty?).freeze
+    set :smtp_username, app_cfg["smtp_username"]
+    set :smtp_password, app_cfg["smtp_password"]
+    set :smtp_from, app_cfg["smtp_from"]
+    set :server_api_token, app_cfg["server_api_token"]
+    set :wordle_base_url, app_cfg["wordle_base_url"]
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
@@ -61,8 +68,20 @@ class LeftWordleApi < Sinatra::Base
     puzzle_response
   end
 
+  get "/api/v1/game/answer" do
+    answer_response
+  end
+
   post "/api/v1/game/guess" do
     guess_response
+  end
+
+  post "/api/v1/game/remaining_counts" do
+    remaining_counts_response
+  end
+
+  post "/api/v1/diagnostics" do
+    diagnostics_response
   end
 
   get "/api/v1/debug/verbose" do
@@ -70,7 +89,6 @@ class LeftWordleApi < Sinatra::Base
   end
 
   post "/api/v1/debug/verbose" do
-    verbose_logging_authorized!
     payload = request_payload
     enabled = payload["enabled"]
     halt_json(:bad_request, "enabled must be true or false") unless [true, false].include?(enabled)
@@ -91,6 +109,8 @@ class LeftWordleApi < Sinatra::Base
   end
 
   get "/guesser" do
+    @game_date, @game_date_error = g_validate_game_date(params["gameDate"])
+    @wordle_base_url = settings.wordle_base_url
     erb :guesser
   end
 
@@ -267,6 +287,51 @@ class LeftWordleApi < Sinatra::Base
       json_response(response)
     end
 
+    def diagnostics_response
+      raw_body = request.body.read
+      halt_json(:bad_request, "Request body is required") if raw_body.strip.empty?
+      halt_json(:payload_too_large, "Request body exceeds 512 KB") if raw_body.bytesize > MAX_DIAGNOSTICS_BODY_BYTES
+      JSON.parse(raw_body)
+      halt_json(:service_unavailable, "Diagnostics email is not configured") unless smtp_configured?
+      send_diagnostics_email(raw_body)
+      json_response({status: "sent"})
+    end
+
+    def smtp_configured?
+      settings.smtp_username.to_s.strip.length.positive? &&
+        settings.smtp_password.to_s.strip.length.positive?
+    end
+
+    def send_diagnostics_email(json_body)
+      ts = Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
+      from_addr = settings.smtp_from.to_s.strip
+      from_addr = settings.smtp_username.to_s.strip if from_addr.empty?
+
+      mail = Mail.new
+      mail.from    = from_addr
+      mail.to      = "left.wordle@wrightzone.com"
+      mail.subject = "Left Wordle Diagnostics Report"
+      mail.body    = "See attached."
+      mail.attachments["left_wordle_diagnostics_#{ts}.json"] = {
+        mime_type: "application/json",
+        content: json_body
+      }
+      if ENV["RACK_ENV"] == "test"
+        mail.delivery_method :test
+      else
+        mail.delivery_method :smtp, {
+          address: "smtp.fastmail.com",
+          port: 587,
+          user_name: settings.smtp_username.to_s.strip,
+          password: settings.smtp_password.to_s.strip,
+          authentication: :login,
+          enable_starttls_auto: true
+        }
+      end
+
+      mail.deliver!
+    end
+
     def halt_json(status, message)
       halt Rack::Utils.status_code(status), JSON.generate(detail: message)
     end
@@ -290,6 +355,42 @@ class LeftWordleApi < Sinatra::Base
     def json_response(payload, status: :ok)
       status(status)
       JSON.generate(payload)
+    end
+
+    def encrypt_answer(word)
+      word.each_char.with_index.map { |c, i|
+        c.ord ^ ANSWER_XOR_KEY[i % ANSWER_XOR_KEY.length].ord
+      }.pack("C*").unpack1("H*")
+    end
+
+    def answer_response
+      date = requested_date(params["date"])
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+      answer = LeftWordle::Game.answer_for(puzzle_number)
+      json_response({
+        encrypted_answer: encrypt_answer(answer),
+        puzzle_num: puzzle_number,
+        date: date.iso8601
+      })
+    end
+
+    def remaining_counts_response
+      payload = request_payload
+      date = requested_date(payload["date"])
+      guesses = payload.fetch("guesses", [])
+
+      unless guesses.is_a?(Array) && guesses.all? { |p|
+        p.is_a?(Array) && p.length == 2 &&
+          p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
+          p[1].to_s.match?(/\A[012]{5}\z/)
+      }
+        halt_json(:bad_request, "guesses must be an array of [word, pattern] pairs")
+      end
+
+      counts = (0...guesses.length).map { |i|
+        guesses[i][1].to_s == "22222" ? 0 : answers_remaining_for(guesses[0..i])
+      }
+      json_response({date: date.iso8601, remaining_counts: counts})
     end
 
     def puzzle_response
@@ -336,18 +437,24 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "Row index must be an integer")
     end
 
-    def verbose_logging_authorized!
-      return if ENV["RACK_ENV"] == "development"
-      auth = request.env["HTTP_AUTHORIZATION"]
-      return if auth&.start_with?("Bearer ") && auth.delete_prefix("Bearer ") == DEBUG_BEARER_TOKEN
-      halt_json(:unauthorized, "Unauthorized")
-    end
-
     def validate_request_origin!
       origin = request.env["HTTP_ORIGIN"]
-      return if origin.nil? || settings.allowed_origins.include?(origin)
 
-      halt_json(:forbidden, "Origin not allowed")
+      if origin
+        halt_json(:forbidden, "Origin not allowed") unless settings.allowed_origins.include?(origin)
+        return
+      end
+
+      auth = request.env["HTTP_AUTHORIZATION"]
+      token = auth&.start_with?("Bearer ") ? auth.delete_prefix("Bearer ") : nil
+      return if token && valid_api_token?(token)
+      halt_json(:unauthorized, "Authorization required")
+    end
+
+    def valid_api_token?(token)
+      return true if %w[development test].include?(ENV["RACK_ENV"]) && token == "1234"
+      server_token = settings.server_api_token.to_s.strip
+      server_token.length.positive? && token == server_token
     end
 
     def guesser_protected!
@@ -517,6 +624,28 @@ class LeftWordleApi < Sinatra::Base
         remaining = remaining.select { |candidate| g_evaluation_string(LeftWordle::Game.evaluate(guess, candidate)) == pattern }
       end
       remaining.length
+    end
+
+    def g_validate_game_date(value)
+      return [nil, nil] if value.nil?
+      return [nil, "Date must use YYYY-MM-DD format"] unless value.is_a?(String) && value.match?(DATE_PATTERN)
+
+      date = begin
+        Date.iso8601(value)
+      rescue Date::Error
+        return [nil, "Date must be a valid calendar date"]
+      end
+
+      if date < LeftWordle::Game::PUZZLE_EPOCH
+        return [nil, "Date cannot be before #{LeftWordle::Game::PUZZLE_EPOCH.iso8601} (puzzle start date)"]
+      end
+
+      last_puzzle_date = LeftWordle::Game::PUZZLE_EPOCH + LeftWordle::Game.all_answers.length - 1
+      if date > last_puzzle_date
+        return [nil, "Date cannot be after #{last_puzzle_date.iso8601} (end of answer list)"]
+      end
+
+      [value, nil]
     end
 
     def g_word_array(value)

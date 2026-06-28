@@ -1,0 +1,85 @@
+{
+	email scott@wrightzone.com
+
+	# Cloudflare IP ranges — restores real visitor IPs for proxied sites.
+	# Applying this globally is safe: non-CDN sites won't receive traffic from
+	# these IPs so it has no effect on them.
+	servers {
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	}
+}
+
+# ── Snippets ──────────────────────────────────────────────────────────────────
+(hide-dot-files) {
+	@hiddenFiles {
+		path_regexp (^|/)\..+
+		not path /.well-known/*
+	}
+	handle @hiddenFiles {
+		error "Access Denied" 403
+	}
+}
+
+(standard-logs) {
+	log {
+		output file /var/log/caddy/{args[0]}.log {
+			roll_size 50mb
+			roll_keep 10
+			roll_keep_for 720h
+		}
+	}
+}
+
+(block_bots) {
+	@disallowed_bots {
+		# 1. Block known bad/AI/search actors
+		header_regexp User-Agent (?i)(googlebot|bingbot|yandex|baiduspider|duckduckbot|slurp|sogou|exabot|ia_archiver|archive.org_bot|mj12bot|ahrefsbot|semrushbot|dotbot|rogerbot|seznam|moatbot|sentibot|monitortests|speedy|lipperhey|backlinkbot|petalbot|pinterestbot|gptbot|chatgpt-user|google-extended|anthropic-ai|claudebot|ccbot|perplexitybot|youbot|bytespider|amazonbot|diffbot|omgilibot|imagesiftbot|cohere-ai|premai|yeti|infobot|branzybot|knowledge-graph|spbot|voltron|headless|phantomjs|puppeteer|selenium|playwright|python-requests|go-http-client|java-http-client|libwww-perl|wget|curl|axios|node-fetch|urllib|python-urllib)
+
+		# 2. Block empty User-Agents (scripts)
+		header User-Agent ""
+
+		# 3. EXCLUSIONS: Do NOT block these (Apple Messages & Mastodon/Fediverse)
+		# Apple Messages: "AppleMessagesBlastDoor" or "facebookexternalhit" (sometimes used by Apple)
+		# Mastodon: "Mastodon" or "http.rb"
+		not header_regexp User-Agent (?i)(AppleMessages|Mastodon|http.rb|facebookexternalhit)
+	}
+
+	abort @disallowed_bots
+}
+
+# ── API rate limiting ──────────────────────────────────────────────────────────
+# Requires caddy-ratelimit: https://github.com/mholt/caddy-ratelimit
+# Build Caddy with: xcaddy build --with github.com/mholt/caddy-ratelimit
+#
+# Usage: import api-rate-limits <unix_socket_path>
+#
+# Rate limit keys use {remote_host}, which resolves to the real client IP because
+# Cloudflare IPs are listed in trusted_proxies above.
+(api-rate-limits) {
+	# Diagnostics triggers an email — keep it very tight.
+	handle /api/v1/diagnostics {
+		rate_limit {
+			zone left_wordle_diagnostics {
+				key    {remote_host}
+				events 5
+				window 15m
+			}
+		}
+		reverse_proxy {args[0]}
+	}
+
+	# General API: generous enough for normal use and the guesser tool.
+	handle /api/* {
+		rate_limit {
+			zone left_wordle_api {
+				key    {remote_host}
+				events 120
+				window 1m
+			}
+		}
+		reverse_proxy {args[0]}
+	}
+}
+
+# 2. Import specific sites
+import /etc/caddy/sites-enabled/*

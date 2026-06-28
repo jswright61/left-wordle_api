@@ -5,6 +5,9 @@ ENV["CORS_ORIGINS"] = "https://left-wordle.example, https://alternate.example"
 
 require "minitest/autorun"
 require "rack/test"
+require "mail"
+
+Mail.defaults { delivery_method :test }
 
 require_relative "../app"
 

@@ -13,3 +13,19 @@
 # No trailing slash. Multiple origins can be listed.
 cors_origins:
   - https://left-wordle.com
+
+# URL used by the guesser's "Play Wordle" link. No trailing slash.
+# dev: http://127.0.0.1:3000, staging: https://staging.left-wordle.com
+wordle_base_url: https://left-wordle.com
+
+# Bearer token required for server-to-server requests (no Origin header).
+# All Origin-less requests must include: Authorization: Bearer <token>
+# In development and test, "1234" is always accepted as a convenience token.
+# server_api_token: your_secret_token_here
+
+# SMTP credentials for the POST /api/v1/diagnostics endpoint.
+# Use an app-specific password from your Fastmail account settings.
+# smtp_from defaults to smtp_username when omitted.
+smtp_username: your_fastmail_address@fastmail.com
+smtp_password: your_app_specific_password
+# smtp_from: optional_from_override@example.com

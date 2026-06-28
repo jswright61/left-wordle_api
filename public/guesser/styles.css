@@ -416,9 +416,47 @@ label {
   background: white;
 }
 
+.date-notice {
+  max-width: 920px;
+  margin: 0 auto 1rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: 0.5rem;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-size: 0.85rem;
+}
+
+.date-notice--error {
+  background: #fce8e7;
+  color: var(--danger);
+}
+
 .result-panel {
   border-color: rgba(45, 106, 79, 0.4);
   background: linear-gradient(135deg, var(--panel), var(--accent-soft));
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.play-wordle-link {
+  display: inline-block;
+  border-radius: 0.65rem;
+  padding: 0.78rem 1rem;
+  color: white;
+  background: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.play-wordle-link:hover {
+  background: var(--accent-dark);
+  transform: translateY(-1px);
 }
 
 .result-panel p:not(.step-label) {

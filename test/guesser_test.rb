@@ -140,6 +140,7 @@ class GuesserTest < Minitest::Test
   end
 
   def test_existing_api_routes_are_unaffected
+    header "Authorization", "Bearer 1234"
     get "/api/v1/health"
     assert last_response.ok?
     assert_equal({"status" => "ok"}, json_response)

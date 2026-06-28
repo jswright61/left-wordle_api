@@ -5,6 +5,12 @@ require_relative "test_helper"
 class AppTest < Minitest::Test
   include ApiTest
 
+  def setup
+    origins = ENV["CORS_ORIGINS"].to_s.split(",").map(&:strip).reject(&:empty?)
+    LeftWordleApi.set :allowed_origins, origins.freeze
+    header "Authorization", "Bearer 1234"
+  end
+
   def test_get_health
     get "/api/v1/health"
 
@@ -76,11 +82,151 @@ class AppTest < Minitest::Test
     assert_equal "Origin not allowed", json_response.fetch("detail")
   end
 
-  def test_request_without_an_origin_is_allowed
+  def test_origin_less_request_accepts_dev_bearer_token
+    # setup already sets "Bearer 1234", which is always valid in test/development
     get "/api/v1/health"
 
     assert last_response.ok?
     refute last_response.headers.key?("access-control-allow-origin")
+  end
+
+  def test_get_answer_returns_encrypted_answer_for_date
+    date = "2021-06-19"
+    get "/api/v1/game/answer", date: date
+
+    assert last_response.ok?
+    body = json_response
+    assert_equal date, body.fetch("date")
+    assert_equal 0, body.fetch("puzzle_num")
+    assert_match(/\A[0-9a-f]+\z/, body.fetch("encrypted_answer"))
+    assert_equal answer_for(date), decrypt_answer(body.fetch("encrypted_answer"))
+  end
+
+  def test_get_answer_decrypted_word_is_five_letters
+    get "/api/v1/game/answer", date: "2021-06-20"
+
+    assert last_response.ok?
+    assert_equal 5, decrypt_answer(json_response.fetch("encrypted_answer")).length
+  end
+
+  def test_get_answer_requires_a_date
+    get "/api/v1/game/answer"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date is required", json_response.fetch("detail")
+  end
+
+  def test_get_answer_rejects_a_non_iso_date
+    get "/api/v1/game/answer", date: "2021-6-19"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date must use YYYY-MM-DD format", json_response.fetch("detail")
+  end
+
+  def test_get_answer_rejects_an_invalid_calendar_date
+    get "/api/v1/game/answer", date: "2026-02-30"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date must be a valid calendar date", json_response.fetch("detail")
+  end
+
+  def test_get_answer_rejects_a_future_date
+    future_date = LeftWordle::Game.latest_available_date + 1
+    get "/api/v1/game/answer", date: future_date.iso8601
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot be later/, json_response.fetch("detail"))
+  end
+
+  def test_post_remaining_counts_returns_counts_for_each_guess
+    date = "2021-06-19"
+    answer = answer_for(date)
+    guesses = [["crane", evaluation_string(LeftWordle::Game.evaluate("crane", answer))]]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: guesses}
+
+    assert last_response.ok?
+    body = json_response
+    assert_equal date, body.fetch("date")
+    counts = body.fetch("remaining_counts")
+    assert_equal 1, counts.length
+    assert_kind_of Integer, counts[0]
+    assert counts[0] >= 0
+  end
+
+  def test_post_remaining_counts_is_cumulative
+    date = "2021-06-19"
+    answer = answer_for(date)
+    g1 = ["crane", evaluation_string(LeftWordle::Game.evaluate("crane", answer))]
+    g2 = ["slate", evaluation_string(LeftWordle::Game.evaluate("slate", answer))]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: [g1, g2]}
+
+    assert last_response.ok?
+    counts = json_response.fetch("remaining_counts")
+    assert_equal 2, counts.length
+    assert counts[1] <= counts[0], "second count should be <= first count"
+  end
+
+  def test_post_remaining_counts_returns_zero_for_winning_guess
+    date = "2021-06-19"
+    answer = answer_for(date)
+    winning_guess = [answer, "22222"]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: [winning_guess]}
+
+    assert last_response.ok?
+    assert_equal [0], json_response.fetch("remaining_counts")
+  end
+
+  def test_post_remaining_counts_returns_zero_for_winning_guess_in_sequence
+    date = "2021-06-19"
+    answer = answer_for(date)
+    g1 = ["crane", evaluation_string(LeftWordle::Game.evaluate("crane", answer))]
+    winning = [answer, "22222"]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: [g1, winning]}
+
+    assert last_response.ok?
+    counts = json_response.fetch("remaining_counts")
+    assert_equal 2, counts.length
+    assert counts[0] > 0, "non-winning guess should have positive count"
+    assert_equal 0, counts[1]
+  end
+
+  def test_post_remaining_counts_returns_empty_array_for_no_guesses
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: []}
+
+    assert last_response.ok?
+    assert_equal [], json_response.fetch("remaining_counts")
+  end
+
+  def test_post_remaining_counts_requires_a_date
+    post_json "/api/v1/game/remaining_counts", {guesses: []}
+
+    assert_equal 400, last_response.status
+    assert_equal "Date is required", json_response.fetch("detail")
+  end
+
+  def test_post_remaining_counts_rejects_guesses_that_is_not_an_array
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: "bad"}
+
+    assert_equal 400, last_response.status
+    assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
+  def test_post_remaining_counts_rejects_malformed_pair
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: [["crane"]]}
+
+    assert_equal 400, last_response.status
+    assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
+  def test_post_remaining_counts_rejects_invalid_pattern
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: [["crane", "xyz99"]]}
+
+    assert_equal 400, last_response.status
+    assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
   end
 
   def test_post_guess_rejects_invalid_json
@@ -309,7 +455,94 @@ class AppTest < Minitest::Test
     assert_equal 404, last_response.status
   end
 
+  def test_origin_less_request_without_bearer_returns_401
+    header "Authorization", nil
+    get "/api/v1/health"
+
+    assert_equal 401, last_response.status
+    assert_equal "Authorization required", json_response.fetch("detail")
+  end
+
+  def test_origin_less_request_rejects_wrong_bearer_token
+    get "/api/v1/health", {}, {"HTTP_AUTHORIZATION" => "Bearer wrong-token"}
+
+    assert_equal 401, last_response.status
+    assert_equal "Authorization required", json_response.fetch("detail")
+  end
+
+  def test_origin_less_request_accepts_correct_bearer_token
+    with_server_api_token("test-server-token") do
+      get "/api/v1/health", {}, {"HTTP_AUTHORIZATION" => "Bearer test-server-token"}
+
+      assert last_response.ok?
+    end
+  end
+
+  def test_browser_request_with_allowed_origin_needs_no_bearer
+    get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://left-wordle.example"}
+
+    assert last_response.ok?
+  end
+
+  def test_request_with_invalid_origin_returns_403_not_401
+    get "/api/v1/health", {}, {"HTTP_ORIGIN" => "https://unrelated.example", "HTTP_AUTHORIZATION" => nil}
+
+    assert_equal 403, last_response.status
+    assert_equal "Origin not allowed", json_response.fetch("detail")
+  end
+
+  def test_post_diagnostics_returns_413_for_oversized_body
+    oversized = "x" * (513 * 1024)
+    post "/api/v1/diagnostics", oversized, {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 413, last_response.status
+    assert_match(/512 KB/, json_response.fetch("detail"))
+  end
+
+  def test_post_diagnostics_returns_400_for_empty_body
+    post "/api/v1/diagnostics", "", {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 400, last_response.status
+    assert_equal "Request body is required", json_response.fetch("detail")
+  end
+
+  def test_post_diagnostics_returns_400_for_invalid_json
+    post "/api/v1/diagnostics", "{bad json", {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 400, last_response.status
+    assert_equal "Request body must be valid JSON", json_response.fetch("detail")
+  end
+
+  def test_post_diagnostics_returns_503_when_smtp_not_configured
+    post_json "/api/v1/diagnostics", {preferences: {}}
+
+    assert_equal 503, last_response.status
+    assert_match(/not configured/, json_response.fetch("detail"))
+  end
+
+  def test_post_diagnostics_sends_email_and_returns_200_when_configured
+    Mail::TestMailer.deliveries.clear
+    with_smtp_configured do
+      post_json "/api/v1/diagnostics", {preferences: {darkTheme: true}, device_id: "abc"}
+
+      assert_equal 200, last_response.status
+      assert_equal "sent", json_response.fetch("status")
+      assert_equal 1, Mail::TestMailer.deliveries.length
+
+      mail = Mail::TestMailer.deliveries.first
+      assert_equal "Left Wordle Diagnostics Report", mail.subject
+      assert_equal ["left.wordle@wrightzone.com"], mail.to
+      assert mail.has_attachments?
+      assert_match(/left_wordle_diagnostics_.*\.json/, mail.attachments.first.filename)
+    end
+  end
+
   private
+
+  def decrypt_answer(hex)
+    key = LeftWordleApi::ANSWER_XOR_KEY
+    [hex].pack("H*").bytes.each_with_index.map { |b, i| (b ^ key[i % key.length].ord).chr }.join
+  end
 
   def answer_for(date)
     puzzle_number = LeftWordle::Game.puzzle_number_for(Date.iso8601(date))
@@ -319,6 +552,24 @@ class AppTest < Minitest::Test
   def evaluation_string(eval_array)
     map = {LeftWordle::Game::ABSENT => "0", LeftWordle::Game::PRESENT => "1", LeftWordle::Game::CORRECT => "2"}
     eval_array.map { |v| map[v] }.join
+  end
+
+  def with_server_api_token(token = "test-server-token")
+    LeftWordleApi.set :server_api_token, token
+    yield
+  ensure
+    LeftWordleApi.set :server_api_token, nil
+  end
+
+  def with_smtp_configured
+    LeftWordleApi.set :smtp_username, "sender@example.com"
+    LeftWordleApi.set :smtp_password, "test-password"
+    LeftWordleApi.set :smtp_from, "sender@example.com"
+    yield
+  ensure
+    LeftWordleApi.set :smtp_username, nil
+    LeftWordleApi.set :smtp_password, nil
+    LeftWordleApi.set :smtp_from, nil
   end
 
   def answers_remaining_count(guess_answer_pairs)
