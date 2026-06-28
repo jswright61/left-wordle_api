@@ -26,6 +26,7 @@ class LeftWordleApi < Sinatra::Base
     set :smtp_password, app_cfg["smtp_password"]
     set :smtp_from, app_cfg["smtp_from"]
     set :server_api_token, app_cfg["server_api_token"]
+    set :wordle_base_url, app_cfg["wordle_base_url"]
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
@@ -108,6 +109,8 @@ class LeftWordleApi < Sinatra::Base
   end
 
   get "/guesser" do
+    @game_date, @game_date_error = g_validate_game_date(params["gameDate"])
+    @wordle_base_url = settings.wordle_base_url
     erb :guesser
   end
 
@@ -621,6 +624,28 @@ class LeftWordleApi < Sinatra::Base
         remaining = remaining.select { |candidate| g_evaluation_string(LeftWordle::Game.evaluate(guess, candidate)) == pattern }
       end
       remaining.length
+    end
+
+    def g_validate_game_date(value)
+      return [nil, nil] if value.nil?
+      return [nil, "Date must use YYYY-MM-DD format"] unless value.is_a?(String) && value.match?(DATE_PATTERN)
+
+      date = begin
+        Date.iso8601(value)
+      rescue Date::Error
+        return [nil, "Date must be a valid calendar date"]
+      end
+
+      if date < LeftWordle::Game::PUZZLE_EPOCH
+        return [nil, "Date cannot be before #{LeftWordle::Game::PUZZLE_EPOCH.iso8601} (puzzle start date)"]
+      end
+
+      last_puzzle_date = LeftWordle::Game::PUZZLE_EPOCH + LeftWordle::Game.all_answers.length - 1
+      if date > last_puzzle_date
+        return [nil, "Date cannot be after #{last_puzzle_date.iso8601} (end of answer list)"]
+      end
+
+      [value, nil]
     end
 
     def g_word_array(value)

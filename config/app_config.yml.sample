@@ -14,6 +14,10 @@
 cors_origins:
   - https://left-wordle.com
 
+# URL used by the guesser's "Play Wordle" link. No trailing slash.
+# dev: http://127.0.0.1:3000, staging: https://staging.left-wordle.com
+wordle_base_url: https://left-wordle.com
+
 # Bearer token required for server-to-server requests (no Origin header).
 # All Origin-less requests must include: Authorization: Bearer <token>
 # In development and test, "1234" is always accepted as a convenience token.

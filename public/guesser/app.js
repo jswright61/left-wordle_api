@@ -27,6 +27,7 @@ const elements = {
   resultLabel: document.querySelector("#result-label"),
   resultTitle: document.querySelector("#result-title"),
   resultDetail: document.querySelector("#result-detail"),
+  playWordleLink: document.querySelector("#play-wordle-link"),
   historyList: document.querySelector("#history-list")
 };
 
@@ -96,7 +97,7 @@ async function startGame(starter) {
       method: "POST",
       body: JSON.stringify({ starter })
     });
-    state = { ...body, history: [], suggestions: [], date: new Date().toISOString().slice(0, 10) };
+    state = { ...body, history: [], suggestions: [], date: window.GAME_DATE || new Date().toISOString().slice(0, 10) };
     elements.starterSection.classList.add("hidden");
     elements.gameSection.classList.remove("hidden");
     elements.resetButton.classList.remove("hidden");
@@ -182,9 +183,9 @@ async function applyPattern(pattern) {
     }
 
     if (body.status === "solved") {
-      finishGame("Solved", `${guess} solved in ${body.attempt} attempts.`);
+      finishGame("Solved", `${guess} solved in ${body.attempt} attempts.`, state.history.map((h) => h.guess));
     } else if (body.status === "answer") {
-      finishGame("One answer remains", `The answer must be ${body.answer}.`);
+      finishGame("One answer remains", `The answer must be ${body.answer}.`, [...state.history.map((h) => h.guess), body.answer]);
     } else if (body.status === "no_answers") {
       finishGame("No answers remain", "Check the patterns entered for this game.");
     } else {
@@ -251,7 +252,7 @@ async function validateCustomGuess(word) {
   }
 }
 
-function finishGame(title, detail) {
+function finishGame(title, detail, playGuesses = null) {
   elements.remainingCount.textContent = state.remaining_count;
   elements.guessSection.classList.add("hidden");
   elements.resultTitle.textContent = title;
@@ -259,6 +260,15 @@ function finishGame(title, detail) {
   elements.resultPanel.classList.remove("hidden");
   renderPossibilities(state.possibilities || [], state.unused_possibilities || []);
   renderHistory();
+
+  if (playGuesses && playGuesses.length > 0 && window.WORDLE_BASE_URL) {
+    const params = new URLSearchParams({gameDate: state.date});
+    playGuesses.forEach((g, i) => params.set(`g${i + 1}`, g));
+    elements.playWordleLink.href = `${window.WORDLE_BASE_URL}?${params}`;
+    elements.playWordleLink.classList.remove("hidden");
+  } else {
+    elements.playWordleLink.classList.add("hidden");
+  }
 }
 
 function resetGame() {

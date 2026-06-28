@@ -6,6 +6,10 @@
     <title>Wordle Guesser</title>
     <base href="/guesser/">
     <link rel="stylesheet" href="styles.css">
+    <script>
+      window.GAME_DATE = <%= @game_date ? "\"#{@game_date}\"" : "null" %>;
+      window.WORDLE_BASE_URL = <%= @wordle_base_url ? "\"#{@wordle_base_url}\"" : "null" %>;
+    </script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -18,6 +22,12 @@
     </header>
 
     <main>
+      <% if @game_date %>
+      <p class="date-notice">Solving for puzzle date <strong><%= @game_date %></strong></p>
+      <% elsif @game_date_error %>
+      <p class="date-notice date-notice--error" role="alert">Invalid gameDate: <%= @game_date_error %> — using today's puzzle.</p>
+      <% end %>
+
       <section id="starter-section" class="panel starter-panel">
         <div class="section-heading">
           <div>
@@ -102,7 +112,10 @@
               <p id="result-label" class="step-label">Game complete</p>
               <h2 id="result-title"></h2>
               <p id="result-detail"></p>
-              <button id="result-reset" type="button">Choose another starter</button>
+              <div class="result-actions">
+                <a id="play-wordle-link" class="play-wordle-link hidden" target="_blank" rel="noopener noreferrer">Play Wordle →</a>
+                <button id="result-reset" type="button">Choose another starter</button>
+              </div>
             </section>
           </div>
 
