@@ -13,7 +13,7 @@ The endpoint returns 503 with a descriptive error if SMTP is not configured, so 
 All mail settings live in `config/app_config.yml` (gitignored). The sample file at `config/app_config.yml.sample` shows the expected keys:
 
 ```yaml
-smtp_username: your_fastmail_address@fastmail.com
+smtp_username: your_fastmail_address@fastmail.fm
 smtp_password: your_app_specific_password
 # smtp_from: optional_from_override@example.com
 ```

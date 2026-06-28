@@ -302,7 +302,7 @@ class LeftWordleApi < Sinatra::Base
     def send_diagnostics_email(json_body)
       ts = Time.now.utc.strftime("%Y%m%dT%H%M%SZ")
       from_addr = settings.smtp_from.to_s.strip
-      from_addr = settings.smtp_username if from_addr.empty?
+      from_addr = settings.smtp_username.to_s.strip if from_addr.empty?
 
       mail = Mail.new
       mail.from    = from_addr
@@ -313,16 +313,15 @@ class LeftWordleApi < Sinatra::Base
         mime_type: "application/json",
         content: json_body
       }
-
       if ENV["RACK_ENV"] == "test"
         mail.delivery_method :test
       else
         mail.delivery_method :smtp, {
           address: "smtp.fastmail.com",
           port: 587,
-          user_name: settings.smtp_username,
-          password: settings.smtp_password,
-          authentication: :plain,
+          user_name: settings.smtp_username.to_s.strip,
+          password: settings.smtp_password.to_s.strip,
+          authentication: :login,
           enable_starttls_auto: true
         }
       end
