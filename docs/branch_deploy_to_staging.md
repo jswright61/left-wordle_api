@@ -31,10 +31,10 @@ git tag -a v0.8.0-eval-in-client -m "Release 0.8.0-eval-in-client"
 
 ### Push the branch and tag to the server remote
 
-The deploy script pushes the tag automatically, but the server's bare repo must have the branch objects. Push the branch explicitly first if it has not been pushed to `paula` before:
+The deploy script pushes the tag automatically, but the server's bare repo must have the branch objects. Push the branch explicitly first if it has not been pushed to `paula-poundstone` before:
 
 ```bash
-git push paula eval-in-client
+git push paula-poundstone eval-in-client
 ```
 
 ## Deploy the branch
@@ -46,7 +46,7 @@ bin/deploy staging --branch eval-in-client
 The script:
 1. Finds the version tag at the tip of `eval-in-client`
 2. Validates the tag exists locally
-3. Pushes the tag to `paula` and `origin`
+3. Pushes the tag to `paula-poundstone` and `origin`
 4. Runs `cap staging deploy` with `DEPLOY_TAG=v0.8.0-eval-in-client`
 
 Capistrano checks out the tagged commit and writes the tag name to the `VERSION` file in the release directory.

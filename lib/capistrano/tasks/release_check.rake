@@ -18,7 +18,7 @@ namespace :deploy do
           Deploy aborted: tag '#{deploy_tag}' not found on remote.
           Push the tag before deploying:
 
-            git push paula #{deploy_tag}
+            git push paula-poundstone #{deploy_tag}
 
         MSG
       end
