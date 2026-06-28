@@ -45,4 +45,20 @@ namespace :users do
   end
 end
 
+namespace :client do
+  desc "Regenerate client/src/valid_guesses.js from answer_list + valid_guesses word data"
+  task :generate_word_list do
+    require_relative "lib/word_data/answer_list"
+    require_relative "lib/word_data/valid_guesses"
+
+    combined = (WordData::AnswerList::WORDS.to_a + WordData::ValidGuesses::WORDS.to_a).uniq.sort
+
+    output = File.expand_path("../../client/src/valid_guesses.js", __FILE__)
+    lines = combined.map { |w| "    #{w.to_s.inspect}" }
+    File.write(output, "var valid_guesses = [\n#{lines.join(",\n")}\n];\n")
+
+    puts "Wrote #{combined.length} words to #{output}"
+  end
+end
+
 task default: :test

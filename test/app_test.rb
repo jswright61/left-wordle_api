@@ -90,6 +90,119 @@ class AppTest < Minitest::Test
     refute last_response.headers.key?("access-control-allow-origin")
   end
 
+  def test_get_answer_returns_encrypted_answer_for_date
+    date = "2021-06-19"
+    get "/api/v1/game/answer", date: date
+
+    assert last_response.ok?
+    body = json_response
+    assert_equal date, body.fetch("date")
+    assert_equal 0, body.fetch("puzzle_num")
+    assert_match(/\A[0-9a-f]+\z/, body.fetch("encrypted_answer"))
+    assert_equal answer_for(date), decrypt_answer(body.fetch("encrypted_answer"))
+  end
+
+  def test_get_answer_decrypted_word_is_five_letters
+    get "/api/v1/game/answer", date: "2021-06-20"
+
+    assert last_response.ok?
+    assert_equal 5, decrypt_answer(json_response.fetch("encrypted_answer")).length
+  end
+
+  def test_get_answer_requires_a_date
+    get "/api/v1/game/answer"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date is required", json_response.fetch("detail")
+  end
+
+  def test_get_answer_rejects_a_non_iso_date
+    get "/api/v1/game/answer", date: "2021-6-19"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date must use YYYY-MM-DD format", json_response.fetch("detail")
+  end
+
+  def test_get_answer_rejects_an_invalid_calendar_date
+    get "/api/v1/game/answer", date: "2026-02-30"
+
+    assert_equal 400, last_response.status
+    assert_equal "Date must be a valid calendar date", json_response.fetch("detail")
+  end
+
+  def test_get_answer_rejects_a_future_date
+    future_date = LeftWordle::Game.latest_available_date + 1
+    get "/api/v1/game/answer", date: future_date.iso8601
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot be later/, json_response.fetch("detail"))
+  end
+
+  def test_post_remaining_counts_returns_counts_for_each_guess
+    date = "2021-06-19"
+    answer = answer_for(date)
+    guesses = [["crane", evaluation_string(LeftWordle::Game.evaluate("crane", answer))]]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: guesses}
+
+    assert last_response.ok?
+    body = json_response
+    assert_equal date, body.fetch("date")
+    counts = body.fetch("remaining_counts")
+    assert_equal 1, counts.length
+    assert_kind_of Integer, counts[0]
+    assert counts[0] >= 0
+  end
+
+  def test_post_remaining_counts_is_cumulative
+    date = "2021-06-19"
+    answer = answer_for(date)
+    g1 = ["crane", evaluation_string(LeftWordle::Game.evaluate("crane", answer))]
+    g2 = ["slate", evaluation_string(LeftWordle::Game.evaluate("slate", answer))]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: [g1, g2]}
+
+    assert last_response.ok?
+    counts = json_response.fetch("remaining_counts")
+    assert_equal 2, counts.length
+    assert counts[1] <= counts[0], "second count should be <= first count"
+  end
+
+  def test_post_remaining_counts_returns_empty_array_for_no_guesses
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: []}
+
+    assert last_response.ok?
+    assert_equal [], json_response.fetch("remaining_counts")
+  end
+
+  def test_post_remaining_counts_requires_a_date
+    post_json "/api/v1/game/remaining_counts", {guesses: []}
+
+    assert_equal 400, last_response.status
+    assert_equal "Date is required", json_response.fetch("detail")
+  end
+
+  def test_post_remaining_counts_rejects_guesses_that_is_not_an_array
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: "bad"}
+
+    assert_equal 400, last_response.status
+    assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
+  def test_post_remaining_counts_rejects_malformed_pair
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: [["crane"]]}
+
+    assert_equal 400, last_response.status
+    assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
+  def test_post_remaining_counts_rejects_invalid_pattern
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: [["crane", "xyz99"]]}
+
+    assert_equal 400, last_response.status
+    assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
+  end
+
   def test_post_guess_rejects_invalid_json
     post "/api/v1/game/guess", "{", {"CONTENT_TYPE" => "application/json"}
 
@@ -399,6 +512,11 @@ class AppTest < Minitest::Test
   end
 
   private
+
+  def decrypt_answer(hex)
+    key = LeftWordleApi::ANSWER_XOR_KEY
+    [hex].pack("H*").bytes.each_with_index.map { |b, i| (b ^ key[i % key.length].ord).chr }.join
+  end
 
   def answer_for(date)
     puzzle_number = LeftWordle::Game.puzzle_number_for(Date.iso8601(date))

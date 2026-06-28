@@ -11,6 +11,7 @@ require_relative "lib/guesser/solve_engine"
 require_relative "lib/verbose_logger"
 
 class LeftWordleApi < Sinatra::Base
+  ANSWER_XOR_KEY = "xQ7mN2vK9pL4wR8tY1sB6dF3hJ0cG5eA"
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
   MAX_DIAGNOSTICS_BODY_BYTES = 512 * 1024
 
@@ -66,8 +67,16 @@ class LeftWordleApi < Sinatra::Base
     puzzle_response
   end
 
+  get "/api/v1/game/answer" do
+    answer_response
+  end
+
   post "/api/v1/game/guess" do
     guess_response
+  end
+
+  post "/api/v1/game/remaining_counts" do
+    remaining_counts_response
   end
 
   post "/api/v1/diagnostics" do
@@ -344,6 +353,40 @@ class LeftWordleApi < Sinatra::Base
     def json_response(payload, status: :ok)
       status(status)
       JSON.generate(payload)
+    end
+
+    def encrypt_answer(word)
+      word.each_char.with_index.map { |c, i|
+        c.ord ^ ANSWER_XOR_KEY[i % ANSWER_XOR_KEY.length].ord
+      }.pack("C*").unpack1("H*")
+    end
+
+    def answer_response
+      date = requested_date(params["date"])
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+      answer = LeftWordle::Game.answer_for(puzzle_number)
+      json_response({
+        encrypted_answer: encrypt_answer(answer),
+        puzzle_num: puzzle_number,
+        date: date.iso8601
+      })
+    end
+
+    def remaining_counts_response
+      payload = request_payload
+      date = requested_date(payload["date"])
+      guesses = payload.fetch("guesses", [])
+
+      unless guesses.is_a?(Array) && guesses.all? { |p|
+        p.is_a?(Array) && p.length == 2 &&
+          p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
+          p[1].to_s.match?(/\A[012]{5}\z/)
+      }
+        halt_json(:bad_request, "guesses must be an array of [word, pattern] pairs")
+      end
+
+      counts = (0...guesses.length).map { |i| answers_remaining_for(guesses[0..i]) }
+      json_response({date: date.iso8601, remaining_counts: counts})
     end
 
     def puzzle_response
