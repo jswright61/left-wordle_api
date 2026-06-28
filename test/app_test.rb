@@ -168,6 +168,32 @@ class AppTest < Minitest::Test
     assert counts[1] <= counts[0], "second count should be <= first count"
   end
 
+  def test_post_remaining_counts_returns_zero_for_winning_guess
+    date = "2021-06-19"
+    answer = answer_for(date)
+    winning_guess = [answer, "22222"]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: [winning_guess]}
+
+    assert last_response.ok?
+    assert_equal [0], json_response.fetch("remaining_counts")
+  end
+
+  def test_post_remaining_counts_returns_zero_for_winning_guess_in_sequence
+    date = "2021-06-19"
+    answer = answer_for(date)
+    g1 = ["crane", evaluation_string(LeftWordle::Game.evaluate("crane", answer))]
+    winning = [answer, "22222"]
+
+    post_json "/api/v1/game/remaining_counts", {date: date, guesses: [g1, winning]}
+
+    assert last_response.ok?
+    counts = json_response.fetch("remaining_counts")
+    assert_equal 2, counts.length
+    assert counts[0] > 0, "non-winning guess should have positive count"
+    assert_equal 0, counts[1]
+  end
+
   def test_post_remaining_counts_returns_empty_array_for_no_guesses
     post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: []}
 

@@ -385,7 +385,9 @@ class LeftWordleApi < Sinatra::Base
         halt_json(:bad_request, "guesses must be an array of [word, pattern] pairs")
       end
 
-      counts = (0...guesses.length).map { |i| answers_remaining_for(guesses[0..i]) }
+      counts = (0...guesses.length).map { |i|
+        guesses[i][1].to_s == "22222" ? 0 : answers_remaining_for(guesses[0..i])
+      }
       json_response({date: date.iso8601, remaining_counts: counts})
     end
 
