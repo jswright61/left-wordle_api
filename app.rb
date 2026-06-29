@@ -438,6 +438,8 @@ class LeftWordleApi < Sinatra::Base
     end
 
     def validate_request_origin!
+      return if request.env["HTTP_SEC_FETCH_SITE"] == "same-origin"
+
       origin = request.env["HTTP_ORIGIN"]
 
       if origin

@@ -90,6 +90,13 @@ class AppTest < Minitest::Test
     refute last_response.headers.key?("access-control-allow-origin")
   end
 
+  def test_same_origin_get_allowed_without_bearer_token
+    header "Authorization", nil
+    get "/api/v1/health", {}, {"HTTP_SEC_FETCH_SITE" => "same-origin"}
+
+    assert last_response.ok?
+  end
+
   def test_get_answer_returns_encrypted_answer_for_date
     date = "2021-06-19"
     get "/api/v1/game/answer", date: date
