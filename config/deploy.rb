@@ -14,7 +14,7 @@ set :default_env, {
   "PATH" => "/home/deploy/.local/share/rv/gems/ruby/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/lib/ruby/gems/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin:/home/deploy/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
 }
 
-set :linked_files, %w[config/app_config.yml]
+set :linked_files, %w[config/app_config.yml users.yml]
 set :linked_dirs, %w[log tmp/pids tmp/sockets bundle]
 
 set :bundle_path, -> { shared_path.join("bundle") }
