@@ -1,5 +1,17 @@
 # frozen_string_literal: true
 
+# Capistrano's valid_release_path? expects 14-digit timestamps; override to
+# accept the custom format set by deploy:set_readable_release_path.
+module Capistrano
+  module DSL
+    module Paths
+      def valid_release_path?(release)
+        !!release.match(/\A\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2}__/)
+      end
+    end
+  end
+end
+
 namespace :deploy do
   task :check_release_tag do
     repo = fetch(:repo_url)
