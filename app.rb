@@ -109,7 +109,8 @@ class LeftWordleApi < Sinatra::Base
   end
 
   get "/guesser" do
-    @game_date, @game_date_error = g_validate_game_date(params["gameDate"])
+    @game_date, @game_date_error = g_validate_game_date(params["date"])
+    @param_warnings = g_collect_param_warnings(request.GET)
     @wordle_base_url = settings.wordle_base_url
     erb :guesser
   end
@@ -626,6 +627,19 @@ class LeftWordleApi < Sinatra::Base
         remaining = remaining.select { |candidate| g_evaluation_string(LeftWordle::Game.evaluate(guess, candidate)) == pattern }
       end
       remaining.length
+    end
+
+    def g_collect_param_warnings(query_params)
+      warnings = []
+      query_params.each do |key, value|
+        next if key.downcase == "date"
+        if key.downcase.include?("date")
+          warnings << {type: "date_typo", key: key, value: value}
+        else
+          warnings << {type: "unknown", key: key, value: value}
+        end
+      end
+      warnings
     end
 
     def g_validate_game_date(value)

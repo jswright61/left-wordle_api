@@ -25,7 +25,7 @@
       <% if @game_date %>
       <p class="date-notice">Solving for puzzle date <strong><%= @game_date %></strong></p>
       <% elsif @game_date_error %>
-      <p class="date-notice date-notice--error" role="alert">Invalid gameDate: <%= @game_date_error %> — using today's puzzle.</p>
+      <p class="date-notice date-notice--error" role="alert">Invalid date: <%= @game_date_error %> — using today's puzzle.</p>
       <% end %>
 
       <section id="starter-section" class="panel starter-panel">
@@ -137,5 +137,19 @@
     <footer>
       Game state stays in this browser tab. Requests only calculate choices and filter answers.
     </footer>
+
+    <% if @param_warnings && @param_warnings.any? %>
+    <dialog id="param-warning-dialog" open>
+      <h2>Unknown URL Parameter<%= @param_warnings.length > 1 ? "s" : "" %></h2>
+      <% @param_warnings.each do |w| %>
+        <% if w[:type] == "date_typo" %>
+        <p>Unrecognized parameter <code>?<%= h(w[:key]) %>=</code>. Did you mean <code>?date=<%= h(w[:value]) %></code>?</p>
+        <% else %>
+        <p>Unknown parameter: <code>?<%= h(w[:key]) %>=<%= h(w[:value]) %></code></p>
+        <% end %>
+      <% end %>
+      <button type="button" onclick="document.getElementById('param-warning-dialog').close()">Dismiss</button>
+    </dialog>
+    <% end %>
   </body>
 </html>

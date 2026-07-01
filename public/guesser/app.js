@@ -262,7 +262,7 @@ function finishGame(title, detail, playGuesses = null) {
   renderHistory();
 
   if (playGuesses && playGuesses.length > 0 && window.WORDLE_BASE_URL) {
-    const params = new URLSearchParams({gameDate: state.date});
+    const params = new URLSearchParams({date: state.date});
     playGuesses.forEach((g, i) => params.set(`g${i + 1}`, g));
     elements.playWordleLink.href = `${window.WORDLE_BASE_URL}?${params}`;
     elements.playWordleLink.classList.remove("hidden");
