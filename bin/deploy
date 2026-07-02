@@ -29,7 +29,7 @@ case "${2:-}" in
       echo "Error: --branch requires a branch name" >&2
       exit 1
     fi
-    TAG=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9][a-zA-Z0-9-]*)?$' | head -1)
+    TAG=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9][a-zA-Z0-9-]*)?$' | head -1 || true)
     if [[ -z "$TAG" ]]; then
       echo "Error: tip of '$BRANCH' has no version tag." >&2
       echo "Tag the commit before deploying:" >&2
@@ -45,7 +45,7 @@ case "${2:-}" in
 esac
 
 if [[ -z "$TAG" ]]; then
-  VERSION=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+  VERSION=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
   if [[ -z "$VERSION" ]]; then
     echo "Error: tip of '$BRANCH' has no semantic version tag." >&2
     echo "Tag the commit before deploying:" >&2
