@@ -54,15 +54,7 @@ if [[ -n "$TAG" ]]; then
     exit 1
   fi
   VERSION="$TAG"
-
   echo "Deploying $VERSION → $ENV (pinned)"
-
-  echo "→ Pushing $VERSION to paula-poundstone..."
-  git push paula-poundstone "$VERSION"
-
-  echo "→ Pushing $VERSION to origin (background)..."
-  git push origin "$VERSION" &>/dev/null &
-  disown $!
 else
   VERSION=$(git tag --points-at "$BRANCH" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
   if [[ -z "$VERSION" ]]; then
@@ -71,9 +63,33 @@ else
     echo "  git tag -a vX.Y.Z -m 'Release X.Y.Z' && git push paula-poundstone vX.Y.Z" >&2
     exit 1
   fi
-
   echo "Deploying $VERSION → $ENV"
+fi
 
+echo "→ Running tests..."
+if ! bundle exec rake test; then
+  echo "" >&2
+  echo "✗ Tests failed — aborting deploy." >&2
+  if git rev-parse --verify "refs/tags/$VERSION" &>/dev/null; then
+    git tag -d "$VERSION"
+    echo "✗ Deleted local tag $VERSION." >&2
+  fi
+  echo "" >&2
+  echo "Ensure all tests pass before re-deploying:" >&2
+  echo "  1. bundle exec rake test" >&2
+  echo "  2. git tag -a $VERSION -m 'Release $VERSION'" >&2
+  echo "  3. bin/deploy $ENV" >&2
+  exit 1
+fi
+
+if [[ -n "$TAG" ]]; then
+  echo "→ Pushing $VERSION to paula-poundstone..."
+  git push paula-poundstone "$VERSION"
+
+  echo "→ Pushing $VERSION to origin (background)..."
+  git push origin "$VERSION" &>/dev/null &
+  disown $!
+else
   echo "→ Pushing $BRANCH + tags to paula-poundstone..."
   git push paula-poundstone "$BRANCH" --tags
 

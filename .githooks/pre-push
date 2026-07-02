@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote="${1:-}"
+url="${2:-}"
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [[ "$branch" != "main" && "$branch" != "staging" ]]; then
+  echo "pre-push: pushes are only allowed from main or staging." >&2
+  echo "pre-push: please merge your changes into one of those branches and push from there." >&2
+  exit 1
+fi
