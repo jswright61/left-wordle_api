@@ -521,10 +521,12 @@ class AppTest < Minitest::Test
   end
 
   def test_post_diagnostics_returns_503_when_smtp_not_configured
-    post_json "/api/v1/diagnostics", {preferences: {}}
+    with_smtp_not_configured do
+      post_json "/api/v1/diagnostics", {preferences: {}}
 
-    assert_equal 503, last_response.status
-    assert_match(/not configured/, json_response.fetch("detail"))
+      assert_equal 503, last_response.status
+      assert_match(/not configured/, json_response.fetch("detail"))
+    end
   end
 
   def test_post_diagnostics_sends_email_and_returns_200_when_configured
@@ -577,6 +579,20 @@ class AppTest < Minitest::Test
     LeftWordleApi.set :smtp_username, nil
     LeftWordleApi.set :smtp_password, nil
     LeftWordleApi.set :smtp_from, nil
+  end
+
+  def with_smtp_not_configured
+    orig_username = LeftWordleApi.smtp_username
+    orig_password = LeftWordleApi.smtp_password
+    orig_from = LeftWordleApi.smtp_from
+    LeftWordleApi.set :smtp_username, nil
+    LeftWordleApi.set :smtp_password, nil
+    LeftWordleApi.set :smtp_from, nil
+    yield
+  ensure
+    LeftWordleApi.set :smtp_username, orig_username
+    LeftWordleApi.set :smtp_password, orig_password
+    LeftWordleApi.set :smtp_from, orig_from
   end
 
   def answers_remaining_count(guess_answer_pairs)
