@@ -14,7 +14,7 @@ Environment=RACK_ENV=production
 Environment=DEPLOY_TO=/home/deploy/left_wordle_api
 
 WorkingDirectory=/home/deploy/left_wordle_api/current
-ExecStart=bundle exec puma -C config/puma.rb
+ExecStart=/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin/bundle exec puma -C config/puma.rb
 ExecReload=/bin/kill -USR2 $MAINPID
 KillMode=mixed
 TimeoutStopSec=30
