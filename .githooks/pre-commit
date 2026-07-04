@@ -1,0 +1,26 @@
+#!/bin/sh
+
+protected_branches="main staging"
+
+branch="$(git symbolic-ref --quiet --short HEAD)" || exit 0
+
+case " $protected_branches " in
+  *" $branch "*)
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+git_dir="$(git rev-parse --git-dir)" || exit 0
+
+if test -f "$git_dir/MERGE_HEAD"; then
+  exit 0
+fi
+
+cat >&2 <<EOF
+Direct commits to '$branch' are blocked in this local repo.
+Create commits on a topic branch, then merge into '$branch' when needed.
+EOF
+
+exit 1
