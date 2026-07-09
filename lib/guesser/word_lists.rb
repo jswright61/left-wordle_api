@@ -7,12 +7,12 @@ module WordLists
 
   def legal_words(force: false)
     @legal_words = nil if force
-    @legal_words ||= LeftWordle::Game::ALL_VALID_WORDS.map(&:upcase)
+    @legal_words ||= LeftWordle::Game.all_valid_words.map(&:upcase)
   end
 
   def orig_answers(force: false)
     @orig_answers = nil if force
-    @orig_answers ||= WordData::AnswerList::WORDS.map(&:upcase)
+    @orig_answers ||= LeftWordle::Game.all_answers.map(&:upcase)
   end
 
   def starters(force: false)

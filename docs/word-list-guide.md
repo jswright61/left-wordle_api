@@ -1,33 +1,37 @@
 # Word List Management Guide
 
+See `docs/database.md` for schema, migrations, and how the seed files work.
+This doc covers the `word_lists` rake tasks specifically.
+
 ## Architecture Overview
 
-### API data files (source of truth)
+### Source of truth: Postgres
 
-| File | Ruby identifier | Type | Size | Role |
-|---|---|---|---|---|
-| `api/lib/word_data/valid_guesses.rb` | `WordData::ValidGuesses::WORDS` | `Set` | 10,657 words | Words valid as guesses but not answers |
-| `api/lib/word_data/answer_list.rb` | `WordData::AnswerList::WORDS` | `Array` | 2,315 words | Puzzle answers in sequence order |
+| Table | Columns | Role |
+|---|---|---|
+| `answers` | `position` (0-indexed, gapless), `word` | Puzzle answers in sequence order |
+| `legal_words` | `word` | Words valid as guesses but not necessarily answers |
 
-**Important:** currently there is zero overlap between the two files. All 2,315 answer words are absent from `valid_guesses.rb`. The desired end state is that `valid_guesses.rb` is the complete allowable-guess set — meaning it includes all answer words too.
+**Important:** currently there is zero overlap between the two tables. All 2,315 answer words are absent from `legal_words`. The desired end state is that `legal_words` is the complete allowable-guess set — meaning it includes all answer words too.
 
-### API runtime constants (derived)
+### API runtime state (derived)
 
-`api/lib/left_wordle/game.rb` line 18:
+`api/lib/left_wordle/game.rb`, `load_words!`:
 
 ```ruby
-ALL_VALID_WORDS = (WordData::ValidGuesses::WORDS | Set.new(WordData::AnswerList::WORDS)).freeze
+@answers = answers.dup.freeze
+@all_valid_words = (legal_words.to_set | @answers.to_set).freeze
 ```
 
-The union is computed once at startup. `valid_guess?` checks against it. This is why guessing an answer word (e.g. `cigar`) is already accepted on staging — the union covers it even though `cigar` is not in `valid_guesses.rb`.
+Called once from `app.rb`'s `configure` block at boot — the union is computed once at startup, not queried per request. `valid_guess?` checks against `@all_valid_words`. This is why guessing an answer word (e.g. `cigar`) is already accepted on staging — the union covers it even though `cigar` is not in `legal_words`.
 
 ### API endpoints
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/v1/ref/legal_words` | `ALL_VALID_WORDS.sort` — the full union, alphabetical |
-| `GET /api/v1/ref/answers` | `WordData::AnswerList::WORDS.sort` — answers sorted alphabetically (loses sequence order) |
-| `POST /api/v1/game/guess` | Validates guess against `ALL_VALID_WORDS` |
+| `GET /api/v1/ref/legal_words` | `LeftWordle::Game.all_valid_words.sort` — the full union, alphabetical |
+| `GET /api/v1/ref/answers` | `LeftWordle::Game.all_answers.sort` — answers sorted alphabetically (loses sequence order) |
+| `POST /api/v1/game/guess` | Validates guess against `all_valid_words` |
 
 ### Client JS files
 
@@ -36,7 +40,7 @@ The union is computed once at startup. `valid_guess?` checks against it. This is
 | `client/src/valid_guesses.js` | `var valid_guesses` | `rake client:generate_word_list` | Yes |
 | `client/src/answer_list.js` | `var answer_list` | Manual / not yet automated | **No** ⚠️ |
 
-**`valid_guesses.js` is already the union.** The existing `client:generate_word_list` rake task writes `AnswerList::WORDS + ValidGuesses::WORDS`, de-duped and sorted, so every answer word is already an allowable client-side guess. That is why staging accepted `cigar`.
+**`valid_guesses.js` is already the union.** The `client:generate_word_list` rake task writes `answers + legal_words` (queried from Postgres), de-duped and sorted, so every answer word is already an allowable client-side guess. That is why staging accepted `cigar`.
 
 **`answer_list.js` is not in `index.html`**, so `window.answer_list` is `undefined` in the live app. `toolsmenu.js` passes it to `PuzzleResolver` for puzzle-number ↔ date lookup, but that feature is currently broken silently. This is a pre-existing gap; address it separately.
 
@@ -54,30 +58,29 @@ Only `valid_guesses` is consulted. Since the rake task already unions both lists
 
 ## How a client word-list update works
 
-The API Rakefile reaches across into the client repo using a relative path hard-coded on line 56:
+The API Rakefile reaches across into the client repo using a relative path hard-coded in `wl_write_client_js`:
 
 ```ruby
 output = File.expand_path("../../client/src/valid_guesses.js", __FILE__)
 ```
 
-This assumes both repos are siblings under the same parent directory (`left_wordle/api/` and `left_wordle/client/`). Running `rake client:generate_word_list` from the `api/` directory rewrites that file in place.
+This assumes both repos are siblings under the same parent directory (`left_wordle/api/` and `left_wordle/client/`). Running `rake client:generate_word_list` (or `word_lists:add_*`) from the `api/` directory rewrites that file in place, along with `db/seeds/answers.txt` / `db/seeds/legal_words.txt`.
 
-After the rake task runs you must commit and deploy the client separately:
+After the rake task runs, commit the results in both repos and deploy the client separately:
 
 ```bash
-# In api/ — run the task, commit the data change
-git add lib/word_data/valid_guesses.rb lib/word_data/answer_list.rb
-git commit -m "Adds words to valid_guesses / answers"
+# In api/ — run the task, commit the data + seed-file change
+git add db/seeds/answers.txt db/seeds/legal_words.txt
+git commit -m "Adds words to legal_words / answers"
 
 # The rake task will have also modified client/src/valid_guesses.js
-# (and eventually client/src/answer_list.js once that task exists)
 cd ../client
-git add src/valid_guesses.js src/answer_list.js   # whichever changed
+git add src/valid_guesses.js
 git commit -m "Regenerates word list JS"
 bin/deploy staging
 ```
 
-The API itself must also be deployed for the updated Ruby constants to take effect (Puma loads them once at startup). API and client deployments are independent.
+The API's Postgres data must also be updated on staging/production for the new words to take effect there (each environment has its own database) — deploy runs migrations automatically, but word-list *content* is data, not schema, so `word_lists:add_*` needs to be run with `DATABASE_URL` pointed at whichever environment you're updating.
 
 ---
 
@@ -89,13 +92,13 @@ legal_words - answers == valid_guesses (conceptually)
 (answers - legal_words) == []
 ```
 
-After the tasks below are run, `valid_guesses.rb` should contain every word that is a valid guess, including all answer words.
+After the tasks below are run, `legal_words` should contain every word that is a valid guess, including all answer words.
 
 ---
 
 ## Rake tasks
 
-Both tasks live in `api/Rakefile` under a `word_lists` namespace. They print a summary and ask for confirmation before writing any files, then regenerate `client/src/valid_guesses.js` directly from the updated data.
+Both tasks live in `api/Rakefile` under a `word_lists` namespace. They print a summary and ask for confirmation before writing anything, then insert into Postgres and regenerate `client/src/valid_guesses.js` + `db/seeds/*.txt` from the updated data.
 
 ### Input: inline words or a file
 
@@ -120,14 +123,14 @@ Words are normalized to lowercase and stripped before validation.
 
 1. Parse input (inline or file) into a list of strings.
 2. Reject anything that is not exactly 5 lowercase ASCII letters.
-3. Load `WordData::ValidGuesses::WORDS`.
-4. Compute `new_words = input - existing_valid_guesses`. Words already present are skipped (idempotent).
+3. Load existing words from the `legal_words` table.
+4. Compute `new_words = input - existing`. Words already present are skipped (idempotent).
 5. Print a summary: rejected words, skipped words, and a preview of words to be added — all words if ≤ 10, otherwise first 5 and last 5 alphabetically.
 6. Prompt for confirmation. Abort if the user does not type `y`.
-7. Rewrite `api/lib/word_data/valid_guesses.rb`: merge the new words into the Set literal, sort the whole list.
-8. Regenerate `client/src/valid_guesses.js` from the updated data.
+7. Insert the new words into `legal_words` (`find_or_create`, safe to rerun).
+8. Regenerate `client/src/valid_guesses.js` and `db/seeds/*.txt` from the updated data.
 
-**Does NOT touch `answer_list.rb`.**
+**Does NOT touch `answers`.**
 
 ### `rake word_lists:add_answers[input]`
 
@@ -137,56 +140,17 @@ Words are normalized to lowercase and stripped before validation.
 
 1. Parse input (inline or file) into a list of strings.
 2. Reject anything that is not exactly 5 lowercase ASCII letters.
-3. Load `WordData::AnswerList::WORDS`.
+3. Load existing words from the `answers` table, ordered by `position`.
 4. Compute `new_answers = input - existing_answers` in the order they appear in input (preserve caller order, skip duplicates, idempotent).
-5. Determine which `new_answers` are absent from `WordData::ValidGuesses::WORDS` — those will also be added there.
-6. Print a summary: rejected words, skipped answers, and a preview of answers to be appended — all words if ≤ 10, otherwise first 5 and last 5 in caller order. Also lists any words to be auto-added to `valid_guesses.rb`.
+5. Determine which `new_answers` are absent from `legal_words` — those will also be added there.
+6. Print a summary: rejected words, skipped answers, and a preview of answers to be appended — all words if ≤ 10, otherwise first 5 and last 5 in caller order. Also lists any words to be auto-added to `legal_words`.
 7. Prompt for confirmation. Abort if the user does not type `y`.
-8. Append `new_answers` to the end of the `WORDS` array in `api/lib/word_data/answer_list.rb`.
-9. If any new answers were absent from `valid_guesses`, rewrite `api/lib/word_data/valid_guesses.rb` with those words merged and sorted.
-10. Regenerate `client/src/valid_guesses.js` from the updated data.
+8. Insert `new_answers` into `answers`, continuing the `position` sequence from the current count.
+9. If any new answers were absent from `legal_words`, insert those too.
+10. Regenerate `client/src/valid_guesses.js` and `db/seeds/*.txt` from the updated data.
 11. *(Future)* Also regenerate `client/src/answer_list.js` once that template exists.
 
-**Ordering guarantee:** existing answers are never reordered. New answers are appended at the end in the order supplied by the caller.
-
----
-
-## File write format
-
-### `valid_guesses.rb`
-
-```ruby
-# frozen_string_literal: true
-
-module WordData
-  module ValidGuesses
-    WORDS = Set.new([
-      "aahed",
-      "aalii",
-      # ... all words, sorted ascending
-      "zymic"
-    ]).freeze
-  end
-end
-```
-
-### `answer_list.rb`
-
-```ruby
-# frozen_string_literal: true
-
-module WordData
-  module AnswerList
-    WORDS = [
-      "cigar",
-      "rebut",
-      # ... existing answers in sequence order, then new ones appended
-      "shave",
-      "newword"   # appended by rake task
-    ].freeze
-  end
-end
-```
+**Ordering guarantee:** existing answers are never reordered — `position` is only ever appended to, never rewritten.
 
 ---
 

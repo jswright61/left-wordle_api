@@ -8,10 +8,15 @@ display behavior.
 
 ```zsh
 rv run bundle install
+createdb left_wordle_api_development
+createdb left_wordle_api_test
+rv run bundle exec rake db:migrate
+rv run bundle exec rake db:seed
 rv run bundle exec rackup
 ```
 
-The API listens on `http://localhost:9292` by default.
+The API listens on `http://localhost:9292` by default. See `docs/database.md`
+for the Postgres/Sequel setup and migration workflow.
 
 ## Endpoints
 
@@ -72,6 +77,8 @@ rv run bundle exec standardrb
 ## Scope
 
 This first version deliberately excludes accounts, passkeys, email, profiles,
-server-side game state, history synchronization, background jobs, and a
-database. Those features can be added behind separate API boundaries when the
-frontend has a concrete need for them.
+server-side game state, history synchronization, and background jobs. Those
+features can be added behind separate API boundaries when the frontend has a
+concrete need for them. Postgres (via Sequel) currently only backs the
+`/guesser` tool's login and the answer/legal-word lists — see
+`docs/database.md`.

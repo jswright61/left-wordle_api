@@ -277,7 +277,7 @@ class AppTest < Minitest::Test
   def test_post_guess_returns_fail_and_solution_on_last_row
     date = "2021-06-19"
     answer = answer_for(date)
-    wrong_guess = WordData::AnswerList::WORDS.find { |word| word != answer }
+    wrong_guess = LeftWordle::Game.all_answers.find { |word| word != answer }
 
     post_json "/api/v1/game/guess", {date: date, guess: wrong_guess, row_index: 5}
 

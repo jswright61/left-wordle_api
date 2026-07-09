@@ -1,26 +1,22 @@
 # frozen_string_literal: true
 
 require "base64"
-require "bcrypt"
 
 require_relative "test_helper"
 
 class GuesserTest < Minitest::Test
   include ApiTest
 
-  TEST_PASSWORD_HASH = BCrypt::Password.create("secret", cost: BCrypt::Engine::MIN_COST).to_s
-
   def setup
     @original_engine = LeftWordleApi.settings.engine
-    @original_users = LeftWordleApi.settings.users
     LeftWordleApi.set :engine, SolveEngine.new(StubGuesser.new)
-    LeftWordleApi.set :users, {"test" => TEST_PASSWORD_HASH}
+    @test_user = User.find_or_create(username: "test") { |u| u.password = "secret" }
     authorize "test", "secret"
   end
 
   def teardown
     LeftWordleApi.set :engine, @original_engine
-    LeftWordleApi.set :users, @original_users
+    @test_user.destroy
   end
 
   def test_guesser_requires_auth

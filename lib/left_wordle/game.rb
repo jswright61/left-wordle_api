@@ -2,9 +2,6 @@
 
 require "date"
 
-require_relative "../word_data/answer_list"
-require_relative "../word_data/valid_guesses"
-
 module LeftWordle
   module Game
     ABSENT = "absent"
@@ -15,12 +12,18 @@ module LeftWordle
     PUZZLE_EPOCH = Date.new(2021, 6, 19)
     WORD_LENGTH = 5
 
-    ALL_VALID_WORDS = (WordData::ValidGuesses::WORDS | Set.new(WordData::AnswerList::WORDS)).freeze
-
     module_function
 
+    # Loads the answer sequence and legal-guess set into frozen in-memory
+    # structures. Called once at boot (see app.rb) so per-guess lookups stay
+    # zero-latency instead of hitting Postgres on every request.
+    def load_words!(answers:, legal_words:)
+      @answers = answers.dup.freeze
+      @all_valid_words = (legal_words.to_set | @answers.to_set).freeze
+    end
+
     def answer_for(puzzle_number)
-      WordData::AnswerList::WORDS.fetch(puzzle_number % WordData::AnswerList::WORDS.length)
+      @answers.fetch(puzzle_number % @answers.length)
     end
 
     def evaluate(guess, answer)
@@ -62,11 +65,15 @@ module LeftWordle
     end
 
     def all_answers
-      WordData::AnswerList::WORDS
+      @answers
+    end
+
+    def all_valid_words
+      @all_valid_words
     end
 
     def valid_guess?(word)
-      ALL_VALID_WORDS.include?(word.downcase)
+      @all_valid_words.include?(word.downcase)
     end
   end
 end

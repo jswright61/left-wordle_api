@@ -2,6 +2,7 @@
 
 ENV["RACK_ENV"] = "test"
 ENV["CORS_ORIGINS"] = "https://left-wordle.example, https://alternate.example"
+ENV["DATABASE_URL"] ||= "postgres:///left_wordle_api_test"
 
 require "minitest/autorun"
 require "rack/test"

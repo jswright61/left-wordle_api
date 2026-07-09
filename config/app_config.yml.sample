@@ -29,3 +29,9 @@ wordle_base_url: https://left-wordle.com
 smtp_username: your_fastmail_address@fastmail.com
 smtp_password: your_app_specific_password
 # smtp_from: optional_from_override@example.com
+
+# Postgres connection string. Required in staging/production — set it here,
+# never in a checked-in file. Local dev/test need no config: lib/db.rb
+# defaults to postgres:///left_wordle_api_#{RACK_ENV} when this is absent,
+# which works out of the box with a local trust-auth Postgres install.
+database_url: postgres://left_wordle:your_password@localhost/left_wordle_api_production

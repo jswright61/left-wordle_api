@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
-require "bcrypt"
 require "json"
 require "mail"
 require "sinatra/base"
 require "yaml"
 
+require_relative "lib/db"
+require_relative "lib/models/user"
+require_relative "lib/models/answer"
+require_relative "lib/models/legal_word"
 require_relative "lib/left_wordle/game"
 require_relative "lib/guesser/solve_engine"
 require_relative "lib/verbose_logger"
@@ -30,12 +33,14 @@ class LeftWordleApi < Sinatra::Base
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
+
+    LeftWordle::Game.load_words!(
+      answers: Answer.order(:position).select_map(:word),
+      legal_words: LegalWord.select_map(:word)
+    )
   end
 
   set :engine, SolveEngine.new
-
-  users_file = File.join(File.expand_path(__dir__), "users.yml")
-  set :users, File.exist?(users_file) ? (YAML.load_file(users_file) || {}) : {}
 
   before do
     next if request.path.start_with?("/guesser")
@@ -470,8 +475,7 @@ class LeftWordleApi < Sinatra::Base
       auth = Rack::Auth::Basic::Request.new(request.env)
       return false unless auth.provided? && auth.basic? && auth.credentials
       username, password = auth.credentials
-      stored = settings.users[username]
-      stored && BCrypt::Password.new(stored) == password
+      !!User.authenticate(username, password)
     end
 
     def guesser
@@ -672,7 +676,7 @@ class LeftWordleApi < Sinatra::Base
     end
 
     def legal_words_response
-      json_response(LeftWordle::Game::ALL_VALID_WORDS.sort)
+      json_response(LeftWordle::Game.all_valid_words.sort)
     end
 
     def answers_response

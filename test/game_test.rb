@@ -4,7 +4,7 @@ require_relative "test_helper"
 
 class GameTest < Minitest::Test
   def test_answer_list_wraps
-    answer_count = WordData::AnswerList::WORDS.length
+    answer_count = LeftWordle::Game.all_answers.length
 
     assert_equal LeftWordle::Game.answer_for(0), LeftWordle::Game.answer_for(answer_count)
   end

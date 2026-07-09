@@ -16,6 +16,9 @@ gem "rackup", "~> 2.3"
 gem "puma", "~> 8.0"
 gem "mail", "~> 2.8"
 
+gem "sequel", "~> 5.9"
+gem "pg", "~> 1.5"
+
 group :development do
   gem "pry", "~> 0.16.0", require: false
   gem "standard", "~> 1.50", require: false
