@@ -41,8 +41,8 @@ Plain Sequel migration files in `db/migrate/`, named `NNN_description.rb`:
 ```bash
 bundle exec rake db:migrate            # run all pending migrations
 bundle exec rake db:migrate[2]         # migrate to a specific version
-bundle exec rake db:rollback           # roll back one step
-bundle exec rake db:rollback[0]        # roll back everything
+bundle exec rake db:rollback[5]        # roll back to a specific version
+bundle exec rake db:rollback           # roll back EVERYTHING (defaults to version 0 — there is no one-step rollback)
 ```
 
 See `db/migrate/001_create_users.rb` for the `Sequel.migration do change ... end`
