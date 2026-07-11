@@ -9,6 +9,8 @@ require_relative "lib/db"
 require_relative "lib/models/guesser_user"
 require_relative "lib/models/answer"
 require_relative "lib/models/legal_word"
+require_relative "lib/models/device"
+require_relative "lib/models/played_game"
 require_relative "lib/left_wordle/game"
 require_relative "lib/guesser/solve_engine"
 require_relative "lib/verbose_logger"
@@ -17,6 +19,7 @@ class LeftWordleApi < Sinatra::Base
   ANSWER_XOR_KEY = "xQ7mN2vK9pL4wR8tY1sB6dF3hJ0cG5eA"
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
   MAX_DIAGNOSTICS_BODY_BYTES = 512 * 1024
+  DEVICE_ID_PATTERN = /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
 
   set :root, File.expand_path(__dir__)
   enable :static
@@ -83,6 +86,10 @@ class LeftWordleApi < Sinatra::Base
 
   post "/api/v1/game/remaining_counts" do
     remaining_counts_response
+  end
+
+  post "/api/v1/game/complete" do
+    complete_response
   end
 
   post "/api/v1/diagnostics" do
@@ -216,7 +223,7 @@ class LeftWordleApi < Sinatra::Base
     def cors_headers
       origin = request.env["HTTP_ORIGIN"]
       headers = {
-        "Access-Control-Allow-Headers" => "Content-Type",
+        "Access-Control-Allow-Headers" => "Content-Type, X-Device-Id",
         "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
         "Vary" => "Origin"
       }
@@ -373,6 +380,11 @@ class LeftWordleApi < Sinatra::Base
       date = requested_date(params["date"])
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
       answer = LeftWordle::Game.answer_for(puzzle_number)
+
+      if (device_id = track_device!)
+        record_game_initiation!(device_id, date, puzzle_number)
+      end
+
       json_response({
         encrypted_answer: encrypt_answer(answer),
         puzzle_num: puzzle_number,
@@ -397,6 +409,82 @@ class LeftWordleApi < Sinatra::Base
         guesses[i][1].to_s == "22222" ? 0 : answers_remaining_for(guesses[0..i])
       }
       json_response({date: date.iso8601, remaining_counts: counts})
+    end
+
+    def complete_response
+      payload = request_payload
+      date = requested_date(payload["date"])
+
+      mode = payload.fetch("mode", "regular").to_s
+      halt_json(:bad_request, "Mode must be regular, hard, or insane") unless %w[regular hard insane].include?(mode)
+
+      game_status = payload["game_status"].to_s
+      halt_json(:bad_request, "game_status must be WIN or FAIL") unless %w[WIN FAIL].include?(game_status)
+
+      guesses = payload.fetch("guesses", [])
+      unless guesses.is_a?(Array) && guesses.any? && guesses.all? { |p|
+        p.is_a?(Array) && p.length == 2 &&
+            p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
+            p[1].to_s.match?(/\A[012]{5}\z/)
+      }
+        halt_json(:bad_request, "guesses must be a non-empty array of [word, pattern] pairs")
+      end
+
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+
+      if (device_id = track_device!)
+        record_game_completion!(device_id, date, puzzle_number, mode, game_status, guesses)
+      end
+
+      json_response({status: "recorded"})
+    end
+
+    def track_device!
+      raw_device_id = request.env["HTTP_X_DEVICE_ID"]
+      return nil unless raw_device_id.is_a?(String) && raw_device_id.match?(DEVICE_ID_PATTERN)
+
+      country_code = request.env["HTTP_CF_IPCOUNTRY"]
+      country_code = nil unless country_code.is_a?(String) && country_code.match?(/\A[A-Za-z]{2}\z/)
+
+      DB[:devices].insert_conflict(
+        target: :client_device_id,
+        update: {country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:devices][:country_code])}
+      ).insert(client_device_id: raw_device_id, country_code: country_code, updated_at: Sequel::CURRENT_TIMESTAMP)
+
+      Device.where(client_device_id: raw_device_id).get(:id)
+    rescue Sequel::DatabaseError
+      nil
+    end
+
+    def record_game_initiation!(device_id, date, puzzle_number)
+      DB[:played_games].insert_conflict(
+        target: [:device_id, :date],
+        update: {
+          puzzle_num: Sequel[:excluded][:puzzle_num],
+          initiated_at: Sequel.function(:coalesce, Sequel[:played_games][:initiated_at], Sequel[:excluded][:initiated_at])
+        }
+      ).insert(device_id: device_id, date: date, puzzle_num: puzzle_number, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP)
+    rescue Sequel::DatabaseError
+      nil
+    end
+
+    def record_game_completion!(device_id, date, puzzle_number, mode, game_status, guesses)
+      DB[:played_games].insert_conflict(
+        target: [:device_id, :date],
+        update: {
+          puzzle_num: Sequel[:excluded][:puzzle_num],
+          mode: Sequel[:excluded][:mode],
+          game_status: Sequel[:excluded][:game_status],
+          guesses: Sequel[:excluded][:guesses],
+          completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at])
+        }
+      ).insert(
+        device_id: device_id, date: date, puzzle_num: puzzle_number,
+        mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
+        completed_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP
+      )
+    rescue Sequel::DatabaseError
+      nil
     end
 
     def puzzle_response

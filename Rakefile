@@ -270,4 +270,85 @@ namespace :client do
   end
 end
 
+namespace :stats do
+  desc "Email a daily summary of DAU, avg completion time, country breakdown, and abandoned games"
+  task :daily_summary do
+    require "mail"
+    require "yaml"
+    require_relative "lib/db"
+
+    app_cfg_file = File.join(__dir__, "config", "app_config.yml")
+    app_cfg = File.exist?(app_cfg_file) ? (YAML.load_file(app_cfg_file) || {}) : {}
+    smtp_username = app_cfg["smtp_username"].to_s.strip
+    smtp_password = app_cfg["smtp_password"].to_s.strip
+    smtp_from = app_cfg["smtp_from"].to_s.strip
+    smtp_from = smtp_username if smtp_from.empty?
+
+    if smtp_username.empty? || smtp_password.empty?
+      abort "SMTP is not configured (smtp_username/smtp_password missing in config/app_config.yml)."
+    end
+
+    dau = DB[:played_games]
+      .where(Sequel.lit("initiated_at IS NOT NULL"))
+      .group(:date)
+      .select(:date, Sequel.function(:count, Sequel.lit("DISTINCT device_id")).as(:dau))
+      .order(Sequel.desc(:date))
+      .limit(14)
+      .all
+
+    completion = DB[:played_games]
+      .where(Sequel.lit("initiated_at IS NOT NULL AND completed_at IS NOT NULL AND completed_at - initiated_at < INTERVAL '30 minutes'"))
+      .group(:date)
+      .select(
+        :date,
+        Sequel.function(:avg, Sequel.lit("completed_at - initiated_at")).as(:avg_completion),
+        Sequel.function(:count, Sequel.lit("*")).as(:included_games)
+      )
+      .order(Sequel.desc(:date))
+      .limit(14)
+      .all
+
+    abandoned = DB[:played_games]
+      .where(Sequel.lit("initiated_at IS NOT NULL AND completed_at IS NULL AND date < CURRENT_DATE - INTERVAL '1 day'"))
+      .count
+
+    countries = DB[:devices]
+      .group(:country_code)
+      .select(:country_code, Sequel.function(:count, Sequel.lit("*")).as(:device_count))
+      .order(Sequel.desc(:device_count))
+      .all
+
+    body = +"Left Wordle -- Daily Stats Summary\n\n"
+    body << "== Daily Active Users (last 14 days) ==\n"
+    dau.each { |row| body << "#{row[:date]}: #{row[:dau]}\n" }
+    body << "\n== Avg Completion Time, under 30min (last 14 days) ==\n"
+    completion.each { |row| body << "#{row[:date]}: #{row[:avg_completion]} (#{row[:included_games]} games)\n" }
+    body << "\n== Abandoned Games (initiated, never completed, puzzle date elapsed) ==\n#{abandoned}\n"
+    body << "\n== Devices by Country ==\n"
+    countries.each { |row| body << "#{row[:country_code] || "unknown"}: #{row[:device_count]}\n" }
+
+    mail = Mail.new
+    mail.from = smtp_from
+    mail.to = "left.wordle@wrightzone.com"
+    mail.subject = "Left Wordle Daily Stats Summary -- #{Date.today.iso8601}"
+    mail.body = body
+
+    if ENV["RACK_ENV"] == "test"
+      mail.delivery_method :test
+    else
+      mail.delivery_method :smtp, {
+        address: "smtp.fastmail.com",
+        port: 587,
+        user_name: smtp_username,
+        password: smtp_password,
+        authentication: :login,
+        enable_starttls_auto: true
+      }
+    end
+
+    mail.deliver!
+    puts "Sent daily stats summary email."
+  end
+end
+
 task default: :test

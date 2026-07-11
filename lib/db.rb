@@ -25,5 +25,6 @@ module LeftWordle
 end
 
 DB = Sequel.connect(LeftWordle::DB.connection_string)
+DB.extension :pg_json
 
 Sequel::Model.plugin :timestamps, update_on_create: true

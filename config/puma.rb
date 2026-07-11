@@ -24,3 +24,12 @@ end
 # On the server: sudo usermod -a -G deploy caddy
 # umask was removed from Puma 6+ DSL; set via systemd service file instead:
 #   UMask=0007
+
+# app.rb's `configure do` block runs real queries at boot (loading answers/legal_words),
+# so Sequel's connection pool opens its first real connection in the master process during
+# preload -- before workers fork. Without this, forked workers inherit and share that same
+# socket, silently corrupting concurrent queries. Disconnecting here forces each worker to
+# lazily open its own fresh connection on first use after fork.
+before_worker_boot do
+  Sequel::DATABASES.each(&:disconnect)
+end
