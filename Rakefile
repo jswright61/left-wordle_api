@@ -291,7 +291,7 @@ namespace :stats do
     dau = DB[:played_games]
       .where(Sequel.lit("initiated_at IS NOT NULL"))
       .group(:date)
-      .select(:date, Sequel.function(:count, Sequel.lit("DISTINCT device_id")).as(:dau))
+      .select(:date, Sequel.function(:count, Sequel.lit("DISTINCT client_device_id")).as(:dau))
       .order(Sequel.desc(:date))
       .limit(14)
       .all
@@ -312,10 +312,13 @@ namespace :stats do
       .where(Sequel.lit("initiated_at IS NOT NULL AND completed_at IS NULL AND date < CURRENT_DATE - INTERVAL '1 day'"))
       .count
 
-    countries = DB[:devices]
+    # Country is captured per-game (a device's country can change game to game --
+    # travel, VPN, mobile network), so this counts games, not distinct devices.
+    countries = DB[:played_games]
+      .exclude(country_code: nil)
       .group(:country_code)
-      .select(:country_code, Sequel.function(:count, Sequel.lit("*")).as(:device_count))
-      .order(Sequel.desc(:device_count))
+      .select(:country_code, Sequel.function(:count, Sequel.lit("*")).as(:game_count))
+      .order(Sequel.desc(:game_count))
       .all
 
     body = +"Left Wordle -- Daily Stats Summary\n\n"
@@ -324,8 +327,8 @@ namespace :stats do
     body << "\n== Avg Completion Time, under 30min (last 14 days) ==\n"
     completion.each { |row| body << "#{row[:date]}: #{row[:avg_completion]} (#{row[:included_games]} games)\n" }
     body << "\n== Abandoned Games (initiated, never completed, puzzle date elapsed) ==\n#{abandoned}\n"
-    body << "\n== Devices by Country ==\n"
-    countries.each { |row| body << "#{row[:country_code] || "unknown"}: #{row[:device_count]}\n" }
+    body << "\n== Games by Country ==\n"
+    countries.each { |row| body << "#{row[:country_code]}: #{row[:game_count]}\n" }
 
     mail = Mail.new
     mail.from = smtp_from

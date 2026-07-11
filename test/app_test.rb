@@ -14,10 +14,9 @@ class AppTest < Minitest::Test
   end
 
   def teardown
-    return unless @device_ids
+    return unless @client_device_ids
 
-    PlayedGame.where(device_id: Device.where(client_device_id: @device_ids).select(:id)).delete
-    Device.where(client_device_id: @device_ids).delete
+    PlayedGame.where(client_device_id: @client_device_ids).delete
   end
 
   def test_get_health
@@ -146,17 +145,15 @@ class AppTest < Minitest::Test
     assert_equal "Date must be a valid calendar date", json_response.fetch("detail")
   end
 
-  def test_get_answer_records_a_device_and_initiation_when_device_id_header_present
-    @device_ids = [device_id = SecureRandom.uuid]
+  def test_get_answer_records_an_initiation_when_device_id_header_present
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
 
-    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => device_id, "HTTP_CF_IPCOUNTRY" => "US"}
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id, "HTTP_CF_IPCOUNTRY" => "US"}
 
     assert last_response.ok?
-    device = Device.first(client_device_id: device_id)
-    refute_nil device
-    assert_equal "US", device.country_code
-
-    played_game = PlayedGame.first(device_id: device.id)
+    played_game = PlayedGame.first(client_device_id: client_device_id)
+    refute_nil played_game
+    assert_equal "US", played_game.country_code
     assert_equal Date.iso8601("2021-06-19"), played_game.date
     assert_equal 0, played_game.puzzle_num
     refute_nil played_game.initiated_at
@@ -171,46 +168,46 @@ class AppTest < Minitest::Test
   end
 
   def test_get_answer_is_a_noop_for_telemetry_when_device_id_header_is_malformed
-    device_count_before = Device.count
+    played_game_count_before = PlayedGame.count
 
     get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => "not-a-uuid"}
 
     assert last_response.ok?
-    assert_equal device_count_before, Device.count
+    assert_equal played_game_count_before, PlayedGame.count
   end
 
   def test_get_answer_repeated_same_day_does_not_change_initiated_at
-    @device_ids = [device_id = SecureRandom.uuid]
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
 
-    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => device_id}
-    first_initiated_at = PlayedGame.first(device_id: Device.first(client_device_id: device_id).id).initiated_at
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id}
+    first_initiated_at = PlayedGame.first(client_device_id: client_device_id).initiated_at
 
     sleep 0.01
-    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => device_id}
-    second_initiated_at = PlayedGame.first(device_id: Device.first(client_device_id: device_id).id).initiated_at
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id}
+    second_initiated_at = PlayedGame.first(client_device_id: client_device_id).initiated_at
 
     assert_equal first_initiated_at, second_initiated_at
   end
 
   def test_get_answer_missing_country_header_does_not_blank_existing_country_code
-    @device_ids = [device_id = SecureRandom.uuid]
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
 
-    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => device_id, "HTTP_CF_IPCOUNTRY" => "US"}
-    get "/api/v1/game/answer", {date: "2021-06-20"}, {"HTTP_X_DEVICE_ID" => device_id}
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id, "HTTP_CF_IPCOUNTRY" => "US"}
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id}
 
-    assert_equal "US", Device.first(client_device_id: device_id).country_code
+    assert_equal "US", PlayedGame.first(client_device_id: client_device_id).country_code
   end
 
   def test_post_complete_records_a_completion
-    @device_ids = [device_id = SecureRandom.uuid]
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
 
-    request_env = {"HTTP_X_DEVICE_ID" => device_id, "CONTENT_TYPE" => "application/json"}
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
     post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["train", "01000"], ["crane", "22222"]]), request_env
 
     assert last_response.ok?
     assert_equal({"status" => "recorded"}, json_response)
 
-    played_game = PlayedGame.first(device_id: Device.first(client_device_id: device_id).id)
+    played_game = PlayedGame.first(client_device_id: client_device_id)
     refute_nil played_game
     assert_equal "regular", played_game.mode
     assert_equal "WIN", played_game.game_status
@@ -219,18 +216,38 @@ class AppTest < Minitest::Test
   end
 
   def test_post_complete_after_initiation_preserves_initiated_at_and_sets_completed_at
-    @device_ids = [device_id = SecureRandom.uuid]
-    request_env = {"HTTP_X_DEVICE_ID" => device_id}
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id}
 
     get "/api/v1/game/answer", {date: "2021-06-19"}, request_env
-    device = Device.first(client_device_id: device_id)
-    initiated_at = PlayedGame.first(device_id: device.id).initiated_at
+    initiated_at = PlayedGame.first(client_device_id: client_device_id).initiated_at
 
     post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]), request_env.merge("CONTENT_TYPE" => "application/json")
 
-    played_game = PlayedGame.first(device_id: device.id)
+    played_game = PlayedGame.first(client_device_id: client_device_id)
     assert_equal initiated_at, played_game.initiated_at
     refute_nil played_game.completed_at
+  end
+
+  def test_post_complete_carries_over_country_code_from_initiation_when_absent_at_completion
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id, "HTTP_CF_IPCOUNTRY" => "US"}
+    post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]), {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+
+    assert_equal "US", PlayedGame.first(client_device_id: client_device_id).country_code
+  end
+
+  def test_post_complete_updates_country_code_when_a_devices_country_changes_between_games
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+
+    get "/api/v1/game/answer", {date: "2021-06-19"}, {"HTTP_X_DEVICE_ID" => client_device_id, "HTTP_CF_IPCOUNTRY" => "US"}
+    post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]), {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+
+    get "/api/v1/game/answer", {date: "2021-06-20"}, {"HTTP_X_DEVICE_ID" => client_device_id, "HTTP_CF_IPCOUNTRY" => "CA"}
+
+    assert_equal "US", PlayedGame.first(client_device_id: client_device_id, date: Date.iso8601("2021-06-19")).country_code
+    assert_equal "CA", PlayedGame.first(client_device_id: client_device_id, date: Date.iso8601("2021-06-20")).country_code
   end
 
   def test_post_complete_rejects_guesses_that_is_not_an_array
@@ -276,15 +293,14 @@ class AppTest < Minitest::Test
   end
 
   def test_post_complete_is_idempotent_on_retry
-    @device_ids = [device_id = SecureRandom.uuid]
-    request_env = {"HTTP_X_DEVICE_ID" => device_id, "CONTENT_TYPE" => "application/json"}
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
     body = JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]])
 
     post "/api/v1/game/complete", body, request_env
     post "/api/v1/game/complete", body, request_env
 
-    device = Device.first(client_device_id: device_id)
-    assert_equal 1, PlayedGame.where(device_id: device.id).count
+    assert_equal 1, PlayedGame.where(client_device_id: client_device_id).count
   end
 
   def test_get_answer_rejects_a_future_date
