@@ -6,7 +6,7 @@ require "sinatra/base"
 require "yaml"
 
 require_relative "lib/db"
-require_relative "lib/models/user"
+require_relative "lib/models/guesser_user"
 require_relative "lib/models/answer"
 require_relative "lib/models/legal_word"
 require_relative "lib/left_wordle/game"
@@ -475,7 +475,7 @@ class LeftWordleApi < Sinatra::Base
       auth = Rack::Auth::Basic::Request.new(request.env)
       return false unless auth.provided? && auth.basic? && auth.credentials
       username, password = auth.credentials
-      !!User.authenticate(username, password)
+      !!GuesserUser.authenticate(username, password)
     end
 
     def guesser

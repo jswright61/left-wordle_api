@@ -10,7 +10,10 @@ class GuesserTest < Minitest::Test
   def setup
     @original_engine = LeftWordleApi.settings.engine
     LeftWordleApi.set :engine, SolveEngine.new(StubGuesser.new)
-    @test_user = User.find_or_create(username: "test") { |u| u.password = "secret" }
+    @test_user = GuesserUser.find_or_create(username: "test") { |u|
+      u.password = "secret"
+      u.approved_at = Time.now
+    }
     authorize "test", "secret"
   end
 
@@ -29,6 +32,34 @@ class GuesserTest < Minitest::Test
     authorize "test", "wrong"
     get "/guesser"
     assert_equal 401, last_response.status
+  end
+
+  def test_guesser_rejects_unapproved_user
+    @test_user.update(approved_at: nil)
+    authorize "test", "secret"
+    get "/guesser"
+    assert_equal 401, last_response.status
+  end
+
+  def test_guesser_rejects_not_yet_approved_user
+    @test_user.update(approved_at: Time.now + 3600)
+    authorize "test", "secret"
+    get "/guesser"
+    assert_equal 401, last_response.status
+  end
+
+  def test_guesser_rejects_deactivated_user
+    @test_user.update(deactivated_at: Time.now - 3600)
+    authorize "test", "secret"
+    get "/guesser"
+    assert_equal 401, last_response.status
+  end
+
+  def test_guesser_allows_user_deactivated_in_the_future
+    @test_user.update(deactivated_at: Time.now + 3600)
+    authorize "test", "secret"
+    get "/guesser"
+    assert last_response.ok?
   end
 
   def test_home_page_loads

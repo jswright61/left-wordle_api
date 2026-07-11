@@ -1,8 +1,9 @@
 # Database
 
 Postgres via [Sequel](https://sequel.jeremyevans.net/), migrated with Sequel's
-built-in migrator. Currently holds `users` (the `/guesser` tool's Basic Auth
-login), `answers` (the puzzle sequence), and `legal_words` (allowed guesses).
+built-in migrator. Currently holds `guesser_users` (the `/guesser` tool's
+Basic Auth login), `answers` (the puzzle sequence), and `legal_words`
+(allowed guesses).
 
 ## Primary keys
 

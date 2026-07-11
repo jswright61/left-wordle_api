@@ -61,18 +61,18 @@ namespace :users do
   task :add do
     require "io/console"
     require_relative "lib/db"
-    require_relative "lib/models/user"
+    require_relative "lib/models/guesser_user"
 
     print "Username: "
     username = $stdin.gets.chomp.strip
     abort "Username cannot be blank." if username.empty?
 
-    user = User.first(username: username)
+    user = GuesserUser.first(username: username)
     if user
       print "User '#{username}' already exists. Update password? (y/n): "
       abort "Cancelled." unless $stdin.gets.chomp.strip.downcase == "y"
     else
-      user = User.new(username: username)
+      user = GuesserUser.new(username: username)
     end
 
     print "Password: "
@@ -88,6 +88,7 @@ namespace :users do
     abort "Passwords do not match." unless password == confirm
 
     user.password = password
+    user.approved_at = Time.now
     user.save
     puts "User '#{username}' saved."
   end
