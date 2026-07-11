@@ -4,10 +4,10 @@ This app deploys to `paula-poundstone` (Ubuntu Server) as the `deploy` user usin
 
 ## Environments
 
-| Environment | Branch | Deploy path | Systemd service |
-|---|---|---|---|
-| Production | `main` | `/home/deploy/left_wordle_api` | `left-wordle-api` |
-| Staging | `staging` | `/home/deploy/staging_left_wordle_api` | `left-wordle-api-staging` |
+| Environment | Branch | Deploy path | Systemd service | Systemd scheduler timer |
+|---|---|---|---|---|
+| Production | `main` | `/home/deploy/left_wordle_api` | `left-wordle-api` | `left-wordle-scheduler.timer` |
+| Staging | `staging` | `/home/deploy/staging_left_wordle_api` | `left-wordle-api-staging` | `left-wordle-scheduler-staging.timer` |
 
 ---
 
@@ -130,7 +130,25 @@ If you prefer, `cap staging puma:setup` (and `cap production puma:setup`) automa
 
 If the PATH in the service file ever needs updating (e.g. after a Ruby version upgrade), edit the file in the repo and re-run the `scp` + `mv` steps above, then `sudo systemctl daemon-reload` and restart the service.
 
-#### 7. Create the application config file
+#### 7. Install the scheduler timer
+
+Recurring tasks (e.g. the daily stats summary email) are driven by a `scheduled_tasks`
+database table and a systemd timer that ticks every 5 minutes, running
+`bundle exec rake scheduler:tick` to check which rows are due. This is separate
+from the Puma service — it's a oneshot `.service` unit triggered by a `.timer` unit,
+not something that stays running.
+
+`cap production scheduler:setup` (and `cap staging scheduler:setup`) upload both the
+`.service` and `.timer` files from `config/deploy/templates/`, then enable + start
+the `.timer` (the `.service` itself is never enabled directly — the timer triggers it).
+
+After the first deploy, `scheduler:seed` (hooked to run automatically after every
+deploy) ensures the known scheduled tasks exist in the database — currently just
+`stats:daily_summary`, running daily at 05:15 UTC. It's safe to rerun and never
+overwrites a row that's already there, so tweaking a schedule by hand in the
+database (e.g. changing `run_at` or `enabled`) persists across deploys.
+
+#### 8. Create the application config file
 
 CORS origins and other per-environment settings live in `shared/config/app_config.yml` on the server. Capistrano symlinks it into each release as `config/app_config.yml`. The file is gitignored — create it once manually from the sample.
 
@@ -160,14 +178,14 @@ cors_origins:
   - https://staging.left-wordle.com
 ```
 
-#### 8. Run the first deploy
+#### 9. Run the first deploy
 
 ```bash
 cap production deploy
 cap staging deploy
 ```
 
-#### 9. Configure Caddy
+#### 10. Configure Caddy
 
 Replace the domain placeholders in `Caddyfile`, then copy it to the server:
 

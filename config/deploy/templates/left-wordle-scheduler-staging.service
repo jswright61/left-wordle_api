@@ -1,0 +1,24 @@
+[Unit]
+Description=Left Wordle API — Staging (Scheduled Task Runner)
+After=network.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+# rv adds actual Ruby binary dirs to PATH (no shims). Update these if Ruby version changes.
+# Verify live paths: ssh deploy@paula-poundstone 'bash -lc "echo $PATH"'
+Environment=HOME=/home/deploy
+Environment=PATH=/home/deploy/.local/share/rv/gems/ruby/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/lib/ruby/gems/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin:/home/deploy/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+Environment=RACK_ENV=staging
+Environment=DEPLOY_TO=/home/deploy/staging_left_wordle_api
+
+WorkingDirectory=/home/deploy/staging_left_wordle_api/current
+ExecStart=/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin/bundle exec rake scheduler:tick
+
+# --- One-time server setup notes ---
+# 1. Upload this file (and the matching .timer): cap staging scheduler:setup
+# 2. Allow deploy user to manage the service without a password:
+#      echo 'deploy ALL=(ALL) NOPASSWD: /bin/systemctl start left-wordle-scheduler-staging, /bin/systemctl stop left-wordle-scheduler-staging, /bin/systemctl status left-wordle-scheduler-staging, /bin/systemctl daemon-reload, /bin/systemctl enable left-wordle-scheduler-staging.timer, /bin/systemctl start left-wordle-scheduler-staging.timer, /bin/systemctl status left-wordle-scheduler-staging.timer' | sudo tee /etc/sudoers.d/left-wordle-scheduler-staging
+# 3. This unit itself is never `enable`d or has `WantedBy` — the .timer unit
+#    triggers it directly by name. Only the .timer is enabled/started.

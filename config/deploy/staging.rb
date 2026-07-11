@@ -3,6 +3,7 @@
 set :branch, "staging"
 set :deploy_to, "/home/deploy/staging_left_wordle_api"
 set :puma_service, "left-wordle-api-staging"
+set :scheduler_service, "left-wordle-scheduler-staging"
 
 server "paula-poundstone",
   user: "deploy",

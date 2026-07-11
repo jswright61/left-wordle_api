@@ -1,0 +1,10 @@
+[Unit]
+Description=Left Wordle API — Production (Scheduled Task Runner Timer)
+
+[Timer]
+# Ticks every 5 minutes; scheduled_tasks.run_at only needs minute-level precision.
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

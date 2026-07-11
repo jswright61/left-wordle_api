@@ -3,6 +3,7 @@
 set :branch, "main"
 set :deploy_to, "/home/deploy/left_wordle_api"
 set :puma_service, "left-wordle-api"
+set :scheduler_service, "left-wordle-scheduler"
 
 Environment=CORS_ORIGINS="https://left-wordle.com"
 

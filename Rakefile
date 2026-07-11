@@ -351,4 +351,6 @@ namespace :stats do
   end
 end
 
+load File.join(__dir__, "lib/tasks/scheduler.rake")
+
 task default: :test
