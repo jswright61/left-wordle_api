@@ -199,6 +199,41 @@ class WebauthnTest < Minitest::Test
     assert_equal ["1"], json_response.keys
   end
 
+  def test_import_local_data_records_a_new_user_creation_snapshot
+    body = register_new_device!
+    payload = {
+      preferences: {darkTheme: true},
+      statistics: {currentStreak: 1},
+      # Not restored into any account column -- just along for the ride
+      # into the snapshot as an extra safety net (see auth.js importLocalData).
+      settings_backup: {"v1.0.0" => {ts: "2026-01-01T00:00:00Z"}}
+    }
+
+    post_json "/api/v2/import/local_data", payload, csrf_env(body["csrf_token"])
+    assert last_response.ok?
+
+    snapshot = StorageSnapshot.where(user_id: body["user_id"]).order(:created_at).last
+    refute_nil snapshot
+    assert_equal "new user creation", snapshot.event
+    assert_equal true, snapshot.local_storage["preferences"]["darkTheme"]
+    assert_equal "2026-01-01T00:00:00Z", snapshot.local_storage["settings_backup"]["v1.0.0"]["ts"]
+  end
+
+  # -- Storage snapshots (audit trail) -----------------------------------------
+
+  def test_profile_download_records_an_update_client_local_storage_snapshot
+    body = register_new_device!
+    put_json "/api/v2/profile/preferences", {darkTheme: true}, csrf_env(body["csrf_token"])
+
+    get "/api/v2/profile"
+    assert last_response.ok?
+
+    snapshot = StorageSnapshot.where(user_id: body["user_id"]).order(:created_at).last
+    refute_nil snapshot
+    assert_equal "update client local storage", snapshot.event
+    assert_equal true, snapshot.local_storage["preferences"]["darkTheme"]
+  end
+
   # -- Stats adjustment audit trail -------------------------------------------
 
   def test_stats_adjust_records_a_before_and_after_snapshot

@@ -127,14 +127,32 @@ class SchedulerTest < Minitest::Test
     restore_stats_daily_summary_row(original)
   end
 
+  def test_seed_creates_the_storage_snapshots_prune_row
+    original = ScheduledTask.first(name: "storage_snapshots:prune")
+    ScheduledTask.where(name: "storage_snapshots:prune").delete
+
+    Rake::Task["scheduler:seed"].invoke
+
+    task = ScheduledTask.first(name: "storage_snapshots:prune")
+    refute_nil task
+    assert_equal true, task.enabled
+    assert_equal Sequel::SQLTime.parse("04:00:00"), task.run_at
+  ensure
+    restore_scheduled_task_row("storage_snapshots:prune", original)
+  end
+
   private
 
   def restore_stats_daily_summary_row(original)
-    ScheduledTask.where(name: "stats:daily_summary").delete
+    restore_scheduled_task_row("stats:daily_summary", original)
+  end
+
+  def restore_scheduled_task_row(name, original)
+    ScheduledTask.where(name: name).delete
     return unless original
 
     ScheduledTask.create(
-      name: "stats:daily_summary", run_at: original.run_at,
+      name: name, run_at: original.run_at,
       enabled: original.enabled, last_run_at: original.last_run_at
     )
   end

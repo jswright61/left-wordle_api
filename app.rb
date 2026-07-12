@@ -16,6 +16,7 @@ require_relative "lib/models/session"
 require_relative "lib/models/device_link_token"
 require_relative "lib/models/user_profile"
 require_relative "lib/models/stats_adjustment"
+require_relative "lib/models/storage_snapshot"
 require_relative "lib/left_wordle/game"
 require_relative "lib/guesser/solve_engine"
 require_relative "lib/verbose_logger"
@@ -812,16 +813,28 @@ class LeftWordleApi < Sinatra::Base
       UserProfile.first(user_id: user.id) || UserProfile.create(user_id: user.id)
     end
 
+    # Debug/audit trail of what got written into the client's local storage
+    # and when -- see storage_snapshots migration for the pruning rationale.
+    def record_storage_snapshot!(user, event, local_storage)
+      StorageSnapshot.create(
+        user_id: user.id,
+        client_device_id: extract_client_device_id,
+        event: event,
+        local_storage: Sequel.pg_json(local_storage)
+      )
+    end
+
     def profile_get_response
       user = require_authenticated_user!
       profile = user.user_profile
-      json_response({
+      data = {
         preferences: profile&.preferences || {},
         game_state: profile&.game_state || {},
-        statistics: profile&.statistics || {},
-        email: user.email,
-        csrf_token: current_csrf_token
-      })
+        statistics: profile&.statistics || {}
+      }
+      record_storage_snapshot!(user, "update client local storage", data)
+
+      json_response(data.merge(email: user.email, csrf_token: current_csrf_token))
     end
 
     def put_preferences_response
@@ -972,6 +985,7 @@ class LeftWordleApi < Sinatra::Base
           game_state: Sequel.pg_json(payload["game_state"].is_a?(Hash) ? payload["game_state"] : {}),
           statistics: Sequel.pg_json(payload["statistics"].is_a?(Hash) ? payload["statistics"] : {})
         )
+        record_storage_snapshot!(user, "new user creation", payload)
 
         user.update(imported_at: Sequel::CURRENT_TIMESTAMP)
       end
