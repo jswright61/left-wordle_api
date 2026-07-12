@@ -10,15 +10,28 @@ require_relative "lib/models/guesser_user"
 require_relative "lib/models/answer"
 require_relative "lib/models/legal_word"
 require_relative "lib/models/played_game"
+require_relative "lib/models/user"
+require_relative "lib/models/passkey_credential"
+require_relative "lib/models/session"
+require_relative "lib/models/device_link_token"
+require_relative "lib/models/user_profile"
+require_relative "lib/models/stats_adjustment"
 require_relative "lib/left_wordle/game"
 require_relative "lib/guesser/solve_engine"
 require_relative "lib/verbose_logger"
+require_relative "lib/webauthn_config"
+require_relative "lib/auth_helpers"
 
 class LeftWordleApi < Sinatra::Base
   ANSWER_XOR_KEY = "xQ7mN2vK9pL4wR8tY1sB6dF3hJ0cG5eA"
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
   MAX_DIAGNOSTICS_BODY_BYTES = 512 * 1024
+  MAX_IMPORT_ENTRIES = 5_000
   CLIENT_DEVICE_ID_PATTERN = /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
+  RATE_LIMIT_WINDOW_SECONDS = 60
+  RATE_LIMIT_MAX_REQUESTS = 20
+  RATE_LIMIT_MUTEX = Mutex.new
+  RATE_LIMIT_BUCKETS = {}
 
   set :root, File.expand_path(__dir__)
   enable :static
@@ -32,6 +45,10 @@ class LeftWordleApi < Sinatra::Base
     set :smtp_from, app_cfg["smtp_from"]
     set :server_api_token, app_cfg["server_api_token"]
     set :wordle_base_url, app_cfg["wordle_base_url"]
+    set :session_secret, app_cfg["session_secret"]
+    set :session_token_ttl_days, (app_cfg["session_token_ttl_days"] || 365).to_i
+    set :device_link_token_ttl_minutes, (app_cfg["device_link_token_ttl_minutes"] || 15).to_i
+    set :webauthn_origin, app_cfg["webauthn_origin"]
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
@@ -40,7 +57,21 @@ class LeftWordleApi < Sinatra::Base
       answers: Answer.order(:position).select_map(:word),
       legal_words: LegalWord.select_map(:word)
     )
+
+    if settings.webauthn_origin.to_s.strip.length.positive?
+      LeftWordle::WebauthnConfig.configure!(
+        origin: settings.webauthn_origin,
+        rp_name: "Left Wordle",
+        rp_id: app_cfg["webauthn_rp_id"]
+      )
+    end
+
+    if ENV["RACK_ENV"] == "production" && app_cfg["session_secret"].to_s.strip.empty?
+      raise "session_secret must be set in config/app_config.yml in production"
+    end
   end
+
+  helpers AuthHelpers
 
   set :engine, SolveEngine.new
 
@@ -49,6 +80,10 @@ class LeftWordleApi < Sinatra::Base
     content_type :json
     validate_request_origin!
     headers cors_headers.merge("Cache-Control" => "no-store")
+  end
+
+  before "/api/v2/auth/*" do
+    rate_limit!(request.path)
   end
 
   before "/guesser*" do
@@ -117,6 +152,66 @@ class LeftWordleApi < Sinatra::Base
 
   get "/api/v1/ref/prev_answers" do
     prev_answers_response
+  end
+
+  post "/api/v2/auth/register/begin" do
+    register_begin_response
+  end
+
+  post "/api/v2/auth/register/finish" do
+    register_finish_response
+  end
+
+  post "/api/v2/auth/login/begin" do
+    login_begin_response
+  end
+
+  post "/api/v2/auth/login/finish" do
+    login_finish_response
+  end
+
+  post "/api/v2/auth/logout" do
+    logout_response
+  end
+
+  post "/api/v2/auth/device_link" do
+    device_link_response
+  end
+
+  patch "/api/v2/account/email" do
+    patch_email_response
+  end
+
+  post "/api/v2/import/local_data" do
+    import_local_data_response
+  end
+
+  get "/api/v2/profile" do
+    profile_get_response
+  end
+
+  put "/api/v2/profile/preferences" do
+    put_preferences_response
+  end
+
+  put "/api/v2/profile/game_state" do
+    put_game_state_response
+  end
+
+  put "/api/v2/profile/statistics" do
+    put_statistics_response
+  end
+
+  get "/api/v2/history" do
+    history_get_response
+  end
+
+  post "/api/v2/history/import" do
+    history_import_response
+  end
+
+  post "/api/v2/stats/adjust" do
+    stats_adjust_response
   end
 
   get "/guesser" do
@@ -222,12 +317,19 @@ class LeftWordleApi < Sinatra::Base
     def cors_headers
       origin = request.env["HTTP_ORIGIN"]
       headers = {
-        "Access-Control-Allow-Headers" => "Content-Type, X-Device-Id",
-        "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers" => "Content-Type, X-Device-Id, X-CSRF-Token",
+        "Access-Control-Allow-Methods" => "GET, POST, PUT, PATCH, OPTIONS",
         "Vary" => "Origin"
       }
 
-      headers["Access-Control-Allow-Origin"] = origin if settings.allowed_origins.include?(origin)
+      if settings.allowed_origins.include?(origin)
+        headers["Access-Control-Allow-Origin"] = origin
+        # Same-origin requests never need this (browsers don't apply CORS to
+        # them at all), but setting it defends the deployment against ever
+        # drifting to a separate frontend/API host without the session
+        # cookie silently breaking -- see api/docs/security_architecture.md.
+        headers["Access-Control-Allow-Credentials"] = "true"
+      end
       headers
     end
 
@@ -381,7 +483,7 @@ class LeftWordleApi < Sinatra::Base
       answer = LeftWordle::Game.answer_for(puzzle_number)
 
       if (client_device_id = extract_client_device_id)
-        record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number)
+        record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number, current_user&.id)
       end
 
       json_response({
@@ -432,7 +534,7 @@ class LeftWordleApi < Sinatra::Base
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
 
       if (client_device_id = extract_client_device_id)
-        record_game_completion!(client_device_id, extract_country_code, date, puzzle_number, mode, game_status, guesses)
+        record_game_completion!(client_device_id, extract_country_code, date, puzzle_number, mode, game_status, guesses, current_user&.id)
       end
 
       json_response({status: "recorded"})
@@ -448,23 +550,27 @@ class LeftWordleApi < Sinatra::Base
       country_code if country_code.is_a?(String) && country_code.match?(/\A[A-Za-z]{2}\z/)
     end
 
-    def record_game_initiation!(client_device_id, country_code, date, puzzle_number)
+    def record_game_initiation!(client_device_id, country_code, date, puzzle_number, user_id = nil)
       DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
           initiated_at: Sequel.function(:coalesce, Sequel[:played_games][:initiated_at], Sequel[:excluded][:initiated_at]),
-          country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code])
+          country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
+          # A device's rows attach to a user once it has an active session,
+          # and never get un-attached by a later anonymous request.
+          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
         }
       ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
-        country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP
+        country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
+        user_id: user_id
       )
     rescue Sequel::DatabaseError
       nil
     end
 
-    def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses)
+    def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil)
       DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
@@ -473,15 +579,422 @@ class LeftWordleApi < Sinatra::Base
           game_status: Sequel[:excluded][:game_status],
           guesses: Sequel[:excluded][:guesses],
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
-          country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code])
+          country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
+          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
         }
       ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
-        country_code: country_code, completed_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP
+        country_code: country_code, completed_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
+        user_id: user_id
       )
     rescue Sequel::DatabaseError
       nil
+    end
+
+    # -- Rate limiting (auth endpoints only) -------------------------------
+    # Per-process sliding window. Puma runs multiple worker processes, so
+    # this only bounds abuse per-worker -- adequate for launch, not a
+    # substitute for edge-layer rate limiting (see
+    # api/docs/security_architecture.md's layered rate-limiting guidance).
+
+    def rate_limit!(bucket_key)
+      return if ENV["RACK_ENV"] == "test"
+
+      key = "#{request.ip}:#{bucket_key}"
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      RATE_LIMIT_MUTEX.synchronize do
+        timestamps = (RATE_LIMIT_BUCKETS[key] ||= [])
+        timestamps.reject! { |t| now - t > RATE_LIMIT_WINDOW_SECONDS }
+        halt_json(:too_many_requests, "Too many requests, try again later") if timestamps.length >= RATE_LIMIT_MAX_REQUESTS
+        timestamps << now
+      end
+    end
+
+    # -- Passkey registration and login ------------------------------------
+
+    def normalize_email(value)
+      return nil if value.nil?
+      email = value.to_s.strip
+      return nil if email.empty?
+      halt_json(:bad_request, "Email is not valid") unless email.match?(/\A[^@\s]+@[^@\s]+\.[^@\s]+\z/)
+      email.downcase
+    end
+
+    def display_name_for(user)
+      user.email || "Left Wordle Player"
+    end
+
+    def register_begin_response
+      payload = request_payload
+      raw_link_token = payload["device_link_token"]
+
+      if raw_link_token
+        token = redeem_device_link_token(raw_link_token)
+        halt_json(:bad_request, "This device-link code has expired or already been used") unless token
+        user = token.user
+        device_link_token_digest = token.token_digest
+      else
+        user = User.create(email: normalize_email(payload["email"]))
+        device_link_token_digest = nil
+      end
+
+      options = WebAuthn::Credential.options_for_create(
+        user: {id: user.webauthn_user_id, name: display_name_for(user), display_name: display_name_for(user)},
+        exclude: user.passkey_credentials.map(&:external_id),
+        # Accounts are anonymous by default, so login (login_begin_response)
+        # uses the usernameless/discoverable-credential flow -- that only
+        # works if the credential was created as discoverable in the first
+        # place, which requires explicitly requesting a resident key here.
+        authenticator_selection: {resident_key: "required", user_verification: "preferred"}
+      )
+
+      issue_pending_ceremony!(
+        purpose: "register",
+        challenge: options.challenge,
+        user_id: user.id,
+        device_link_token_digest: device_link_token_digest
+      )
+
+      json_response({options: options.as_json})
+    end
+
+    def register_finish_response
+      payload = request_payload
+      pending = consume_pending_ceremony!(purpose: "register")
+      user = User[pending["user_id"]]
+      halt_json(:bad_request, "Passkey ceremony expired or invalid") unless user
+
+      credential = verify_new_credential!(payload["credential"], pending["challenge"])
+
+      joined_existing_account = !pending["device_link_token_digest"].nil?
+      if joined_existing_account
+        token = DeviceLinkToken.first(token_digest: pending["device_link_token_digest"])
+        halt_json(:bad_request, "This device-link code has expired or already been used") unless token&.redeemable?
+        consume_device_link_token!(token)
+      end
+
+      PasskeyCredential.create(
+        user_id: user.id,
+        external_id: credential.id,
+        public_key: credential.public_key,
+        sign_count: credential.sign_count || 0,
+        nickname: payload["nickname"]
+      )
+
+      issue_session_cookie!(user, extract_client_device_id)
+
+      json_response({
+        user_id: user.id,
+        email: user.email,
+        joined_existing_account: joined_existing_account,
+        csrf_token: current_csrf_token
+      }, status: :created)
+    end
+
+    def verify_new_credential!(credential_payload, expected_challenge)
+      halt_json(:bad_request, "credential is required") unless credential_payload.is_a?(Hash)
+      result = WebAuthn::Credential.from_create(credential_payload)
+      result.verify(expected_challenge)
+      result
+    rescue WebAuthn::Error => e
+      halt_json(:bad_request, "Passkey registration failed: #{e.message}")
+    end
+
+    def login_begin_response
+      options = WebAuthn::Credential.options_for_get(allow: [])
+      issue_pending_ceremony!(purpose: "login", challenge: options.challenge)
+      json_response({options: options.as_json})
+    end
+
+    def login_finish_response
+      payload = request_payload
+      pending = consume_pending_ceremony!(purpose: "login")
+      credential_payload = payload["credential"]
+      halt_json(:bad_request, "credential is required") unless credential_payload.is_a?(Hash)
+
+      stored = PasskeyCredential.first(external_id: credential_payload["id"])
+      halt_json(:unauthorized, "Not authorized") unless stored
+
+      result = verify_assertion!(credential_payload, pending["challenge"], stored)
+
+      stored.update(sign_count: result.sign_count || stored.sign_count, last_used_at: Sequel::CURRENT_TIMESTAMP)
+      user = stored.user
+      issue_session_cookie!(user, extract_client_device_id)
+
+      json_response({user_id: user.id, email: user.email, csrf_token: current_csrf_token})
+    end
+
+    def verify_assertion!(credential_payload, expected_challenge, stored_credential)
+      result = WebAuthn::Credential.from_get(credential_payload)
+      result.verify(expected_challenge, public_key: stored_credential.public_key, sign_count: stored_credential.sign_count)
+      result
+    rescue WebAuthn::Error
+      halt_json(:unauthorized, "Not authorized")
+    end
+
+    def logout_response
+      require_authenticated_user!
+      clear_session_cookie!
+      json_response({status: "logged_out"})
+    end
+
+    def device_link_response
+      user = require_authenticated_user!
+      require_csrf!
+      payload = request_payload
+      delivery = payload["delivery"].to_s
+      halt_json(:bad_request, "delivery must be qr or email") unless %w[qr email].include?(delivery)
+
+      if delivery == "email"
+        halt_json(:bad_request, "Add an email to your account first") if user.email.to_s.strip.empty?
+        halt_json(:service_unavailable, "Email is not configured") unless smtp_configured?
+      end
+
+      raw_token, token = issue_device_link_token_for!(user, delivery)
+      link_url = "#{settings.wordle_base_url}/?link_token=#{raw_token}"
+
+      if delivery == "qr"
+        json_response({delivery: "qr", url: link_url, expires_at: token.expires_at.iso8601})
+      else
+        send_device_link_email(user.email, link_url)
+        json_response({delivery: "email", status: "sent", expires_at: token.expires_at.iso8601})
+      end
+    end
+
+    def send_device_link_email(to_email, link_url)
+      from_addr = settings.smtp_from.to_s.strip
+      from_addr = settings.smtp_username.to_s.strip if from_addr.empty?
+      ttl = settings.device_link_token_ttl_minutes
+
+      mail = Mail.new
+      mail.from = from_addr
+      mail.to = to_email
+      mail.subject = "Add this device to your Left Wordle account"
+      mail.body = "Open this link on the device you want to add:\n\n#{link_url}\n\n" \
+        "This link expires in #{ttl} minutes and can only be used once."
+
+      if ENV["RACK_ENV"] == "test"
+        mail.delivery_method :test
+      else
+        mail.delivery_method :smtp, {
+          address: "smtp.fastmail.com",
+          port: 587,
+          user_name: settings.smtp_username.to_s.strip,
+          password: settings.smtp_password.to_s.strip,
+          authentication: :login,
+          enable_starttls_auto: true
+        }
+      end
+
+      mail.deliver!
+    end
+
+    def patch_email_response
+      user = require_authenticated_user!
+      require_csrf!
+      payload = request_payload
+      email = normalize_email(payload["email"])
+      halt_json(:bad_request, "Email is required") unless email
+
+      begin
+        user.update(email: email, email_verified_at: nil)
+      rescue Sequel::UniqueConstraintViolation
+        halt_json(:conflict, "Email already in use")
+      end
+
+      json_response({email: user.email})
+    end
+
+    # -- Profile (preferences / game_state / statistics) ---------------------
+
+    def find_or_create_profile(user)
+      UserProfile.first(user_id: user.id) || UserProfile.create(user_id: user.id)
+    end
+
+    def profile_get_response
+      user = require_authenticated_user!
+      profile = user.user_profile
+      json_response({
+        preferences: profile&.preferences || {},
+        game_state: profile&.game_state || {},
+        statistics: profile&.statistics || {},
+        email: user.email,
+        csrf_token: current_csrf_token
+      })
+    end
+
+    def put_preferences_response
+      user = require_authenticated_user!
+      require_csrf!
+      find_or_create_profile(user).update(preferences: Sequel.pg_json(request_payload))
+      json_response({status: "ok"})
+    end
+
+    def put_game_state_response
+      user = require_authenticated_user!
+      require_csrf!
+      find_or_create_profile(user).update(game_state: Sequel.pg_json(request_payload))
+      json_response({status: "ok"})
+    end
+
+    def put_statistics_response
+      user = require_authenticated_user!
+      require_csrf!
+      find_or_create_profile(user).update(statistics: Sequel.pg_json(request_payload))
+      json_response({status: "ok"})
+    end
+
+    def stats_adjust_response
+      user = require_authenticated_user!
+      require_csrf!
+      payload = request_payload
+      profile = find_or_create_profile(user)
+      before_stats = profile.statistics || {}
+
+      DB.transaction do
+        StatsAdjustment.create(user_id: user.id, before: Sequel.pg_json(before_stats), after: Sequel.pg_json(payload))
+        profile.update(statistics: Sequel.pg_json(payload))
+      end
+
+      json_response({status: "ok", statistics: profile.statistics})
+    end
+
+    # -- History (server-side played_games for the logged-in user) -----------
+
+    def history_get_response
+      user = require_authenticated_user!
+      json_response(history_hash_for(PlayedGame.where(user_id: user.id).all))
+    end
+
+    def history_hash_for(rows)
+      rows.each_with_object({}) do |row, hash|
+        hash[row.puzzle_num.to_s] = {
+          puzzle_num: row.puzzle_num,
+          date: row.date.iso8601,
+          mode: row.mode,
+          game_status: row.game_status,
+          guesses: row.guesses,
+          completed_at: row.completed_at&.iso8601
+        }
+      end
+    end
+
+    def history_import_response
+      user = require_authenticated_user!
+      require_csrf!
+      entries = request_payload["history"]
+      halt_json(:bad_request, "history must be an array") unless entries.is_a?(Array)
+      halt_json(:payload_too_large, "Too many history entries") if entries.length > MAX_IMPORT_ENTRIES
+
+      imported = 0
+      skipped = 0
+      entries.each do |entry|
+        if existing_played_game_for(user, entry)
+          skipped += 1
+        elsif import_history_row!(user, entry)
+          imported += 1
+        else
+          skipped += 1
+        end
+      end
+
+      json_response({imported: imported, skipped: skipped})
+    end
+
+    def existing_played_game_for(user, entry)
+      return nil unless entry.is_a?(Hash)
+      puzzle_num = Integer(entry["puzzle_num"], exception: false)
+      return nil unless puzzle_num
+      PlayedGame.first(user_id: user.id, puzzle_num: puzzle_num)
+    end
+
+    # entry shape (agreed client<->API contract for both this endpoint and
+    # import_local_data_response): {puzzle_num, date, mode, game_status
+    # ("WIN"/"FAIL", already translated by the client from its own local
+    # result encoding), guesses (optional [word, pattern] pairs),
+    # completed_at (optional), device_id (optional, the device it was
+    # actually played on)}.
+    def import_history_row!(user, entry)
+      return false unless entry.is_a?(Hash)
+
+      date = safe_date(entry["date"])
+      puzzle_num = Integer(entry["puzzle_num"], exception: false)
+      return false unless date && puzzle_num
+
+      client_device_id = valid_uuid?(entry["device_id"]) ? entry["device_id"] : extract_client_device_id
+      return false unless client_device_id
+
+      mode = entry.fetch("mode", "regular").to_s
+      mode = "regular" unless %w[regular hard insane].include?(mode)
+      game_status = entry["game_status"].to_s
+      game_status = nil unless %w[WIN FAIL].include?(game_status)
+      guesses = entry["guesses"].is_a?(Array) ? entry["guesses"] : []
+      completed_at = safe_time(entry["completed_at"])
+
+      DB[:played_games].insert_conflict(
+        target: [:client_device_id, :date],
+        update: {
+          user_id: Sequel[:excluded][:user_id],
+          puzzle_num: Sequel[:excluded][:puzzle_num],
+          mode: Sequel[:excluded][:mode],
+          game_status: Sequel.function(:coalesce, Sequel[:played_games][:game_status], Sequel[:excluded][:game_status]),
+          guesses: Sequel.function(:coalesce, Sequel[:played_games][:guesses], Sequel[:excluded][:guesses]),
+          completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at])
+        }
+      ).insert(
+        user_id: user.id, client_device_id: client_device_id, date: date, puzzle_num: puzzle_num,
+        mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
+        completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
+      )
+      true
+    rescue Sequel::DatabaseError
+      false
+    end
+
+    def import_local_data_response
+      user = require_authenticated_user!
+      require_csrf!
+      halt_json(:conflict, "Local data has already been imported for this account") if user.imported?
+
+      payload = request_payload
+      history_entries = payload["history"]
+      history_entries = [] if history_entries.nil?
+      halt_json(:bad_request, "history must be an array") unless history_entries.is_a?(Array)
+      halt_json(:payload_too_large, "Too many history entries") if history_entries.length > MAX_IMPORT_ENTRIES
+
+      imported_count = 0
+      DB.transaction do
+        history_entries.each { |entry| imported_count += 1 if import_history_row!(user, entry) }
+
+        find_or_create_profile(user).update(
+          preferences: Sequel.pg_json(payload["preferences"].is_a?(Hash) ? payload["preferences"] : {}),
+          game_state: Sequel.pg_json(payload["game_state"].is_a?(Hash) ? payload["game_state"] : {}),
+          statistics: Sequel.pg_json(payload["statistics"].is_a?(Hash) ? payload["statistics"] : {})
+        )
+
+        user.update(imported_at: Sequel::CURRENT_TIMESTAMP)
+      end
+
+      json_response({imported_games: imported_count, status: "ok"})
+    end
+
+    def safe_date(value)
+      return nil unless value.is_a?(String) && value.match?(DATE_PATTERN)
+      Date.iso8601(value)
+    rescue Date::Error
+      nil
+    end
+
+    def safe_time(value)
+      return nil unless value.is_a?(String) && !value.empty?
+      Time.iso8601(value)
+    rescue ArgumentError
+      nil
+    end
+
+    def valid_uuid?(value)
+      value.is_a?(String) && value.match?(CLIENT_DEVICE_ID_PATTERN)
     end
 
     def puzzle_response

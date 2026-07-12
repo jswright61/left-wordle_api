@@ -35,3 +35,27 @@ smtp_password: your_app_specific_password
 # defaults to postgres:///left_wordle_api_#{RACK_ENV} when this is absent,
 # which works out of the box with a local trust-auth Postgres install.
 database_url: postgres://left_wordle:your_password@localhost/left_wordle_api_production
+
+# WebAuthn (passkey login). The browser origin that invokes
+# navigator.credentials — must exactly match, scheme and host, what the
+# frontend is actually served from (no trailing slash).
+# dev: http://localhost:3000, staging: https://staging.left-wordle.com
+webauthn_origin: https://left-wordle.com
+
+# Relying Party ID credentials are scoped to. Defaults to webauthn_origin's
+# host when omitted, which is correct for this app's same-origin
+# deployments. Select the permanent value before any real user registers a
+# passkey in production — credentials cannot move to a different RP ID
+# later. See api/docs/security_architecture.md.
+# webauthn_rp_id: left-wordle.com
+
+# How long an issued session cookie remains valid.
+session_token_ttl_days: 365
+
+# How long a QR/email device-link token remains redeemable.
+device_link_token_ttl_minutes: 15
+
+# Secret used to derive CSRF tokens and sign pending WebAuthn ceremony
+# cookies (HMAC-SHA256). Required in production -- the app refuses to boot
+# without it. Generate with: ruby -rsecurerandom -e "puts SecureRandom.hex(32)"
+session_secret: your_random_secret_here

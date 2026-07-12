@@ -19,6 +19,8 @@ gem "mail", "~> 2.8"
 gem "sequel", "~> 5.9"
 gem "pg", "~> 1.5"
 
+gem "webauthn", "~> 3.4"
+
 group :development do
   gem "pry", "~> 0.16.0", require: false
   gem "standard", "~> 1.50", require: false
