@@ -81,6 +81,9 @@ class AppTest < Minitest::Test
     assert_equal 204, last_response.status
     assert_equal "https://left-wordle.example", last_response.headers.fetch("access-control-allow-origin")
     assert_equal "Origin", last_response.headers.fetch("vary")
+    # DELETE (passkey revocation) must be preflight-allowed, or browsers
+    # block the real request before it's ever sent.
+    assert_includes last_response.headers.fetch("access-control-allow-methods"), "DELETE"
   end
 
   def test_request_rejects_an_unapproved_origin
@@ -734,31 +737,6 @@ class AppTest < Minitest::Test
     yield
   ensure
     LeftWordleApi.set :server_api_token, nil
-  end
-
-  def with_smtp_configured
-    LeftWordleApi.set :smtp_username, "sender@example.com"
-    LeftWordleApi.set :smtp_password, "test-password"
-    LeftWordleApi.set :smtp_from, "sender@example.com"
-    yield
-  ensure
-    LeftWordleApi.set :smtp_username, nil
-    LeftWordleApi.set :smtp_password, nil
-    LeftWordleApi.set :smtp_from, nil
-  end
-
-  def with_smtp_not_configured
-    orig_username = LeftWordleApi.smtp_username
-    orig_password = LeftWordleApi.smtp_password
-    orig_from = LeftWordleApi.smtp_from
-    LeftWordleApi.set :smtp_username, nil
-    LeftWordleApi.set :smtp_password, nil
-    LeftWordleApi.set :smtp_from, nil
-    yield
-  ensure
-    LeftWordleApi.set :smtp_username, orig_username
-    LeftWordleApi.set :smtp_password, orig_password
-    LeftWordleApi.set :smtp_from, orig_from
   end
 
   def answers_remaining_count(guess_answer_pairs)

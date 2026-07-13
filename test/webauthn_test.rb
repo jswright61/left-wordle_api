@@ -175,6 +175,116 @@ class WebauthnTest < Minitest::Test
     assert_equal 400, last_response.status
   end
 
+  # -- Passkey review / revoke -----------------------------------------------
+
+  def test_list_passkeys_requires_authentication
+    get "/api/v2/account/passkeys"
+    assert_equal 401, last_response.status
+  end
+
+  def test_cannot_revoke_your_only_passkey
+    body = register_new_device!
+    get "/api/v2/account/passkeys"
+    passkey_id = json_response["passkeys"].first["id"]
+
+    delete "/api/v2/account/passkeys/#{passkey_id}", {}, csrf_env(body["csrf_token"])
+    assert_equal 400, last_response.status
+  end
+
+  def test_revoking_a_passkey_excludes_it_from_list_and_login
+    first_body = register_new_device!
+    add_second_passkey!(first_body["csrf_token"])
+
+    get "/api/v2/account/passkeys"
+    device_a_id = json_response["passkeys"].find { |pk| pk["nickname"] == "Test Device" }["id"]
+
+    delete "/api/v2/account/passkeys/#{device_a_id}", {}, csrf_env(first_body["csrf_token"])
+    assert last_response.ok?
+    assert_equal "revoked", json_response["status"]
+
+    get "/api/v2/account/passkeys"
+    remaining_nicknames = json_response["passkeys"].map { |pk| pk["nickname"] }
+    refute_includes remaining_nicknames, "Test Device"
+    assert_includes remaining_nicknames, "Second"
+
+    post "/api/v2/auth/logout"
+    post_json "/api/v2/auth/login/begin", {}
+    challenge = json_response["options"]["challenge"]
+    cred = @fake_client.get(challenge: challenge) # first-created credential on this client -- the one just revoked
+    post_json "/api/v2/auth/login/finish", {credential: cred}
+    assert_equal 401, last_response.status
+  end
+
+  def test_register_begin_excludes_only_active_passkeys
+    first_body = register_new_device!
+    passkey = PasskeyCredential.first(user_id: first_body["user_id"])
+    passkey.update(revoked_at: Time.now)
+
+    post_json "/api/v2/auth/device_link", {delivery: "qr"}, csrf_env(first_body["csrf_token"])
+    link_token = json_response["url"][/link_token=(.+)/, 1]
+
+    with_second_device do
+      post_json "/api/v2/auth/register/begin", {device_link_token: link_token}
+      assert_equal [], json_response["options"]["excludeCredentials"]
+    end
+  end
+
+  # -- Account recovery -------------------------------------------------------
+
+  def test_recover_sends_an_email_when_the_account_exists
+    register_new_device!(email: "recover@example.com")
+
+    with_smtp_configured do
+      Mail::TestMailer.deliveries.clear
+      post_json "/api/v2/auth/recover", {email: "recover@example.com"}
+
+      assert last_response.ok?
+      assert_equal "sent", json_response["status"]
+      assert_equal 1, Mail::TestMailer.deliveries.length
+
+      mail = Mail::TestMailer.deliveries.first
+      assert_equal "Recover access to your Left Wordle account", mail.subject
+      assert_equal ["recover@example.com"], mail.to
+    end
+  end
+
+  def test_recover_responds_identically_when_no_account_matches
+    with_smtp_configured do
+      Mail::TestMailer.deliveries.clear
+      post_json "/api/v2/auth/recover", {email: "nobody@example.com"}
+
+      assert last_response.ok?
+      assert_equal "sent", json_response["status"]
+      assert_equal 0, Mail::TestMailer.deliveries.length
+    end
+  end
+
+  def test_recover_link_registers_a_new_passkey_without_an_existing_session
+    first_body = register_new_device!(email: "recover2@example.com")
+    post "/api/v2/auth/logout"
+
+    link_token = nil
+    with_smtp_configured do
+      Mail::TestMailer.deliveries.clear
+      post_json "/api/v2/auth/recover", {email: "recover2@example.com"}
+      mail = Mail::TestMailer.deliveries.first
+      link_token = mail.body.to_s[/link_token=(\S+)/, 1]
+    end
+    refute_nil link_token
+
+    with_second_device do
+      post_json "/api/v2/auth/register/begin", {device_link_token: link_token}
+      assert last_response.ok?
+      challenge = json_response["options"]["challenge"]
+      cred = @fake_client.create(challenge: challenge)
+
+      post_json "/api/v2/auth/register/finish", {credential: cred, nickname: "Recovered Device"}
+      assert_equal 201, last_response.status
+      assert json_response["joined_existing_account"]
+      assert_equal first_body["user_id"], json_response["user_id"]
+    end
+  end
+
   # -- Local data import (one-time) ------------------------------------------
 
   def test_import_local_data_is_one_time_only
@@ -283,6 +393,19 @@ class WebauthnTest < Minitest::Test
     with_session(:second_device) do
       header "Authorization", "Bearer 1234"
       block.call
+    end
+  end
+
+  def add_second_passkey!(csrf_token, nickname: "Second")
+    post_json "/api/v2/auth/device_link", {delivery: "qr"}, csrf_env(csrf_token)
+    link_token = json_response["url"][/link_token=(.+)/, 1]
+
+    with_second_device do
+      post_json "/api/v2/auth/register/begin", {device_link_token: link_token}
+      challenge = json_response["options"]["challenge"]
+      cred = @fake_client.create(challenge: challenge)
+      post_json "/api/v2/auth/register/finish", {credential: cred, nickname: nickname}
+      assert_equal 201, last_response.status, last_response.body
     end
   end
 end

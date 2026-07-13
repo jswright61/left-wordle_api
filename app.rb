@@ -179,8 +179,20 @@ class LeftWordleApi < Sinatra::Base
     device_link_response
   end
 
+  post "/api/v2/auth/recover" do
+    recover_response
+  end
+
   patch "/api/v2/account/email" do
     patch_email_response
+  end
+
+  get "/api/v2/account/passkeys" do
+    passkeys_list_response
+  end
+
+  delete "/api/v2/account/passkeys/:id" do
+    passkey_revoke_response
   end
 
   post "/api/v2/import/local_data" do
@@ -319,7 +331,7 @@ class LeftWordleApi < Sinatra::Base
       origin = request.env["HTTP_ORIGIN"]
       headers = {
         "Access-Control-Allow-Headers" => "Content-Type, X-Device-Id, X-CSRF-Token",
-        "Access-Control-Allow-Methods" => "GET, POST, PUT, PATCH, OPTIONS",
+        "Access-Control-Allow-Methods" => "GET, POST, PUT, PATCH, DELETE, OPTIONS",
         "Vary" => "Origin"
       }
 
@@ -642,7 +654,9 @@ class LeftWordleApi < Sinatra::Base
 
       options = WebAuthn::Credential.options_for_create(
         user: {id: user.webauthn_user_id, name: display_name_for(user), display_name: display_name_for(user)},
-        exclude: user.passkey_credentials.map(&:external_id),
+        # Only exclude active credentials -- a revoked physical key should be
+        # re-registrable, not permanently blocked.
+        exclude: user.passkey_credentials_dataset.where(revoked_at: nil).select_map(:external_id),
         # Accounts are anonymous by default, so login (login_begin_response)
         # uses the usernameless/discoverable-credential flow -- that only
         # works if the credential was created as discoverable in the first
@@ -715,7 +729,7 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "credential is required") unless credential_payload.is_a?(Hash)
 
       stored = PasskeyCredential.first(external_id: credential_payload["id"])
-      halt_json(:unauthorized, "Not authorized") unless stored
+      halt_json(:unauthorized, "Not authorized") unless stored&.active?
 
       result = verify_assertion!(credential_payload, pending["challenge"], stored)
 
@@ -791,6 +805,55 @@ class LeftWordleApi < Sinatra::Base
       mail.deliver!
     end
 
+    # Unauthenticated on purpose -- this is the only way back into an
+    # account once every device with a passkey is lost. Always responds
+    # identically whether or not the email matches an account, so the
+    # endpoint can't be used to discover which emails have accounts.
+    def recover_response
+      halt_json(:service_unavailable, "Email is not configured") unless smtp_configured?
+      payload = request_payload
+      email = normalize_email(payload["email"])
+      halt_json(:bad_request, "Email is required") unless email
+
+      user = User.first(email: email)
+      if user
+        raw_token, = issue_device_link_token_for!(user, "email")
+        link_url = "#{settings.wordle_base_url}/?link_token=#{raw_token}"
+        send_recovery_email(user.email, link_url)
+      end
+
+      json_response({status: "sent"})
+    end
+
+    def send_recovery_email(to_email, link_url)
+      from_addr = settings.smtp_from.to_s.strip
+      from_addr = settings.smtp_username.to_s.strip if from_addr.empty?
+      ttl = settings.device_link_token_ttl_minutes
+
+      mail = Mail.new
+      mail.from = from_addr
+      mail.to = to_email
+      mail.subject = "Recover access to your Left Wordle account"
+      mail.body = "Open this link on the device you want to use:\n\n#{link_url}\n\n" \
+        "This link expires in #{ttl} minutes and can only be used once. If you didn't " \
+        "request this, you can safely ignore this email."
+
+      if ENV["RACK_ENV"] == "test"
+        mail.delivery_method :test
+      else
+        mail.delivery_method :smtp, {
+          address: "smtp.fastmail.com",
+          port: 587,
+          user_name: settings.smtp_username.to_s.strip,
+          password: settings.smtp_password.to_s.strip,
+          authentication: :login,
+          enable_starttls_auto: true
+        }
+      end
+
+      mail.deliver!
+    end
+
     def patch_email_response
       user = require_authenticated_user!
       require_csrf!
@@ -805,6 +868,32 @@ class LeftWordleApi < Sinatra::Base
       end
 
       json_response({email: user.email})
+    end
+
+    def passkeys_list_response
+      user = require_authenticated_user!
+      passkeys = user.passkey_credentials_dataset.where(revoked_at: nil).order(:created_at).all
+      json_response({
+        passkeys: passkeys.map { |pk|
+          {id: pk.id, nickname: pk.nickname, created_at: pk.created_at.iso8601, last_used_at: pk.last_used_at&.iso8601}
+        }
+      })
+    end
+
+    def passkey_revoke_response
+      user = require_authenticated_user!
+      require_csrf!
+      passkey = PasskeyCredential.first(id: params[:id], user_id: user.id)
+      halt_json(:not_found, "Passkey not found") unless passkey
+      return json_response({status: "revoked"}) unless passkey.active?
+
+      active_count = user.passkey_credentials_dataset.where(revoked_at: nil).count
+      if active_count <= 1
+        halt_json(:bad_request, "This is your only Passkey — add another device or set an email before removing it")
+      end
+
+      passkey.update(revoked_at: Sequel::CURRENT_TIMESTAMP)
+      json_response({status: "revoked"})
     end
 
     # -- Profile (preferences / game_state / statistics) ---------------------

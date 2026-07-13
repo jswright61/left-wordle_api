@@ -2,4 +2,8 @@
 
 class PasskeyCredential < Sequel::Model(:passkey_credentials)
   many_to_one :user
+
+  def active?
+    revoked_at.nil?
+  end
 end

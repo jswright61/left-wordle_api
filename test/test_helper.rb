@@ -38,4 +38,29 @@ module ApiTest
   def csrf_env(token)
     {"HTTP_X_CSRF_TOKEN" => token}
   end
+
+  def with_smtp_configured
+    LeftWordleApi.set :smtp_username, "sender@example.com"
+    LeftWordleApi.set :smtp_password, "test-password"
+    LeftWordleApi.set :smtp_from, "sender@example.com"
+    yield
+  ensure
+    LeftWordleApi.set :smtp_username, nil
+    LeftWordleApi.set :smtp_password, nil
+    LeftWordleApi.set :smtp_from, nil
+  end
+
+  def with_smtp_not_configured
+    orig_username = LeftWordleApi.smtp_username
+    orig_password = LeftWordleApi.smtp_password
+    orig_from = LeftWordleApi.smtp_from
+    LeftWordleApi.set :smtp_username, nil
+    LeftWordleApi.set :smtp_password, nil
+    LeftWordleApi.set :smtp_from, nil
+    yield
+  ensure
+    LeftWordleApi.set :smtp_username, orig_username
+    LeftWordleApi.set :smtp_password, orig_password
+    LeftWordleApi.set :smtp_from, orig_from
+  end
 end
