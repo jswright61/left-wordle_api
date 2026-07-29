@@ -10,13 +10,16 @@ namespace :scheduler do
     end
   end
 
-  desc "Upload and enable the systemd service + timer (run once during server setup)"
-  task :setup do
+  desc "Upload and enable the systemd service + timer (run during server setup, and again after any Ruby version bump)"
+  task setup: "rv:install" do
     on roles(:app) do
       service = fetch(:scheduler_service)
       %w[service timer].each do |ext|
         template_path = "config/deploy/templates/#{service}.#{ext}"
-        upload! template_path, "/tmp/#{service}.#{ext}"
+        content = File.read(template_path)
+          .gsub("__RV_PATH__", fetch(:rv_path))
+          .gsub("__RV_RUBY_BIN__", fetch(:rv_ruby_bin))
+        upload! StringIO.new(content), "/tmp/#{service}.#{ext}"
         sudo "mv /tmp/#{service}.#{ext} /etc/systemd/system/#{service}.#{ext}"
       end
       sudo "systemctl daemon-reload"

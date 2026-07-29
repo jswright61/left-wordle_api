@@ -29,12 +29,15 @@ namespace :puma do
     end
   end
 
-  desc "Upload and enable the systemd service (run once during server setup)"
-  task :setup do
+  desc "Upload and enable the systemd service (run during server setup, and again after any Ruby version bump)"
+  task setup: "rv:install" do
     on roles(:app) do
       service = fetch(:puma_service)
       template_path = "config/deploy/templates/#{service}.service"
-      upload! template_path, "/tmp/#{service}.service"
+      content = File.read(template_path)
+        .gsub("__RV_PATH__", fetch(:rv_path))
+        .gsub("__RV_RUBY_BIN__", fetch(:rv_ruby_bin))
+      upload! StringIO.new(content), "/tmp/#{service}.service"
       sudo "mv /tmp/#{service}.service /etc/systemd/system/#{service}.service"
       sudo "systemctl daemon-reload"
       sudo "systemctl enable #{service}"

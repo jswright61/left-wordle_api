@@ -6,15 +6,16 @@ After=network.target
 Type=simple
 User=deploy
 Group=deploy
-# rv adds actual Ruby binary dirs to PATH (no shims). Update these if Ruby version changes.
-# Verify live paths: ssh deploy@paula-poundstone 'bash -lc "echo $PATH"'
+# PATH and the bundle path below are filled in by `cap staging puma:setup`
+# from the Ruby version pinned in api/.ruby-version (see lib/capistrano/tasks/rv.rake).
+# Re-run that setup task after any Ruby version bump to refresh this file.
 Environment=HOME=/home/deploy
-Environment=PATH=/home/deploy/.local/share/rv/gems/ruby/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/lib/ruby/gems/4.0.0/bin:/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin:/home/deploy/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+Environment=PATH=__RV_PATH__
 Environment=RACK_ENV=staging
 Environment=DEPLOY_TO=/home/deploy/staging_left_wordle_api
 
 WorkingDirectory=/home/deploy/staging_left_wordle_api/current
-ExecStart=/home/deploy/.local/share/rv/rubies/ruby-4.0.5/bin/bundle exec puma -C config/puma.rb
+ExecStart=__RV_RUBY_BIN__/bundle exec puma -C config/puma.rb
 ExecReload=/bin/kill -USR2 $MAINPID
 KillMode=mixed
 TimeoutStopSec=30
