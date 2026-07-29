@@ -5,10 +5,11 @@ namespace :rv do
   task :install do
     on roles(:app) do
       ruby_version = fetch(:ruby_version)
+      rv = fetch(:rv_bin)
 
-      execute :rv, "ruby", "install", ruby_version
+      execute rv, "ruby", "install", ruby_version
 
-      ruby_exe = capture(:rv, "ruby", "find", ruby_version).strip
+      ruby_exe = capture(rv, "ruby", "find", ruby_version).strip
       ruby_bin = File.dirname(ruby_exe)
 
       gem_paths = capture(File.join(ruby_bin, "gem"), "environment", "gempath").strip.split(":")
