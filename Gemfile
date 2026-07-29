@@ -26,6 +26,8 @@ group :development do
   gem "standard", "~> 1.50", require: false
   gem "capistrano", "~> 3.19", require: false
   gem "capistrano-bundler", "~> 2.1", require: false
+  gem "ed25519", "~> 1.2", require: false
+  gem "bcrypt_pbkdf", "~> 1.0", require: false
 end
 
 group :test do
