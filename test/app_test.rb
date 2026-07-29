@@ -274,6 +274,14 @@ class AppTest < Minitest::Test
     assert_match(/non-empty array/, json_response.fetch("detail"))
   end
 
+  def test_post_complete_rejects_more_than_max_guesses
+    guesses = Array.new(LeftWordle::Game::MAX_GUESSES + 1) { ["crane", "00000"] }
+    post_json "/api/v1/game/complete", {date: "2021-06-19", mode: "regular", game_status: "FAIL", guesses: guesses}
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot have more than/, json_response.fetch("detail"))
+  end
+
   def test_post_complete_rejects_invalid_mode
     post_json "/api/v1/game/complete", {date: "2021-06-19", mode: "bogus", game_status: "WIN", guesses: [["crane", "22222"]]}
 
@@ -405,6 +413,14 @@ class AppTest < Minitest::Test
     assert_equal "guesses must be an array of [word, pattern] pairs", json_response.fetch("detail")
   end
 
+  def test_post_remaining_counts_rejects_more_than_max_guesses
+    guesses = Array.new(LeftWordle::Game::MAX_GUESSES + 1) { ["crane", "00000"] }
+    post_json "/api/v1/game/remaining_counts", {date: "2021-06-19", guesses: guesses}
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot have more than/, json_response.fetch("detail"))
+  end
+
   def test_post_guess_rejects_invalid_json
     post "/api/v1/game/guess", "{", {"CONTENT_TYPE" => "application/json"}
 
@@ -500,6 +516,14 @@ class AppTest < Minitest::Test
     assert last_response.ok?
     assert_equal "WIN", json_response.fetch("game_status")
     assert_equal 0, json_response.fetch("answers_remaining")
+  end
+
+  def test_post_guess_rejects_more_than_max_prev_guesses
+    prev_guesses = Array.new(LeftWordle::Game::MAX_GUESSES + 1) { ["crane", "00000"] }
+    post_json "/api/v1/game/guess", {date: "2021-06-19", guess: "crane", row_index: 0, prev_guesses: prev_guesses}
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot have more than/, json_response.fetch("detail"))
   end
 
   def test_post_guess_filters_answers_by_prev_guesses_and_current_guess

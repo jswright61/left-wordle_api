@@ -217,4 +217,26 @@ class VerboseLoggingApiTest < Minitest::Test
     assert_equal 400, last_response.status
     assert_match(/true or false/, json_response.fetch("detail"))
   end
+
+  # An allowed Origin satisfies the app-wide origin check but must NOT be
+  # enough for the operator-only debug toggle -- that requires the server
+  # API token itself.
+  def test_post_verbose_requires_the_server_api_token
+    header "Authorization", nil
+    origin = ENV["CORS_ORIGINS"].to_s.split(",").first.strip
+
+    post_json "/api/v1/debug/verbose", {enabled: true}, {"HTTP_ORIGIN" => origin}
+
+    assert_equal 401, last_response.status
+    refute VerboseLogging.enabled?
+  end
+
+  def test_get_verbose_requires_the_server_api_token
+    header "Authorization", nil
+    origin = ENV["CORS_ORIGINS"].to_s.split(",").first.strip
+
+    get "/api/v1/debug/verbose", {}, {"HTTP_ORIGIN" => origin}
+
+    assert_equal 401, last_response.status
+  end
 end

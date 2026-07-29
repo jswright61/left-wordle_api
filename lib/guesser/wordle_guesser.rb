@@ -7,7 +7,7 @@ class WordleGuesser
 
   attr_reader :ordered
 
-  def starter_choices(today: Date.today)
+  def starter_choices(today: LeftWordle::Game.latest_available_date)
     grouped = starters.group_by do |starter|
       puzzle_date = starter[:puzzle_date]
       if puzzle_date.nil?

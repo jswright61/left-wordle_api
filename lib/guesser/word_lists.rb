@@ -29,6 +29,6 @@ module WordLists
   end
 
   def unused
-    orig_answers[LeftWordle::Game.puzzle_number_for(Date.today)..]
+    orig_answers[LeftWordle::Game.puzzle_number_for(LeftWordle::Game.latest_available_date)..]
   end
 end

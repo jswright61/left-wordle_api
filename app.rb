@@ -132,10 +132,12 @@ class LeftWordleApi < Sinatra::Base
   end
 
   get "/api/v1/debug/verbose" do
+    require_server_api_token!
     json_response({verbose_logging: VerboseLogging.enabled?})
   end
 
   post "/api/v1/debug/verbose" do
+    require_server_api_token!
     payload = request_payload
     enabled = payload["enabled"]
     halt_json(:bad_request, "enabled must be true or false") unless [true, false].include?(enabled)
@@ -382,6 +384,9 @@ class LeftWordleApi < Sinatra::Base
       }
         halt_json(:bad_request, "prev_guesses must be an array of [word, pattern] pairs")
       end
+      if prev_guesses.length > LeftWordle::Game::MAX_GUESSES
+        halt_json(:bad_request, "prev_guesses cannot have more than #{LeftWordle::Game::MAX_GUESSES} entries")
+      end
 
       case mode
       when "hard" then validate_hard_mode!(guess, prev_guesses)
@@ -518,6 +523,9 @@ class LeftWordleApi < Sinatra::Base
       }
         halt_json(:bad_request, "guesses must be an array of [word, pattern] pairs")
       end
+      if guesses.length > LeftWordle::Game::MAX_GUESSES
+        halt_json(:bad_request, "guesses cannot have more than #{LeftWordle::Game::MAX_GUESSES} entries")
+      end
 
       counts = (0...guesses.length).map { |i|
         guesses[i][1].to_s == "22222" ? 0 : answers_remaining_for(guesses[0..i])
@@ -542,6 +550,9 @@ class LeftWordleApi < Sinatra::Base
             p[1].to_s.match?(/\A[012]{5}\z/)
       }
         halt_json(:bad_request, "guesses must be a non-empty array of [word, pattern] pairs")
+      end
+      if guesses.length > LeftWordle::Game::MAX_GUESSES
+        halt_json(:bad_request, "guesses cannot have more than #{LeftWordle::Game::MAX_GUESSES} entries")
       end
 
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
@@ -617,6 +628,9 @@ class LeftWordleApi < Sinatra::Base
       key = "#{request.ip}:#{bucket_key}"
       now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       RATE_LIMIT_MUTEX.synchronize do
+        # Drop buckets whose newest entry has aged out, so the hash doesn't
+        # grow unboundedly with one key per (ip, path) ever seen.
+        RATE_LIMIT_BUCKETS.delete_if { |_, ts| ts.empty? || now - ts.last > RATE_LIMIT_WINDOW_SECONDS }
         timestamps = (RATE_LIMIT_BUCKETS[key] ||= [])
         timestamps.reject! { |t| now - t > RATE_LIMIT_WINDOW_SECONDS }
         halt_json(:too_many_requests, "Too many requests, try again later") if timestamps.length >= RATE_LIMIT_MAX_REQUESTS
@@ -648,7 +662,11 @@ class LeftWordleApi < Sinatra::Base
         user = token.user
         device_link_token_digest = token.token_digest
       else
-        user = User.create(email: normalize_email(payload["email"]))
+        begin
+          user = User.create(email: normalize_email(payload["email"]))
+        rescue Sequel::UniqueConstraintViolation
+          halt_json(:conflict, "Email already in use")
+        end
         device_link_token_digest = nil
       end
 
@@ -686,7 +704,9 @@ class LeftWordleApi < Sinatra::Base
       if joined_existing_account
         token = DeviceLinkToken.first(token_digest: pending["device_link_token_digest"])
         halt_json(:bad_request, "This device-link code has expired or already been used") unless token&.redeemable?
-        consume_device_link_token!(token)
+        unless consume_device_link_token!(token)
+          halt_json(:bad_request, "This device-link code has expired or already been used")
+        end
       end
 
       PasskeyCredential.create(
@@ -887,8 +907,10 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:not_found, "Passkey not found") unless passkey
       return json_response({status: "revoked"}) unless passkey.active?
 
+      # Revoking the last passkey is only allowed when the account has an
+      # email, so /api/v2/auth/recover can still get the user back in.
       active_count = user.passkey_credentials_dataset.where(revoked_at: nil).count
-      if active_count <= 1
+      if active_count <= 1 && user.email.to_s.strip.empty?
         halt_json(:bad_request, "This is your only Passkey — add another device or set an email before removing it")
       end
 
@@ -1164,6 +1186,15 @@ class LeftWordleApi < Sinatra::Base
       return true if %w[development test].include?(ENV["RACK_ENV"]) && token == "1234"
       server_token = settings.server_api_token.to_s.strip
       server_token.length.positive? && token == server_token
+    end
+
+    # For operator-only endpoints: passing the origin check isn't enough
+    # (any browser on an allowed origin does that) -- the server API token
+    # itself is required.
+    def require_server_api_token!
+      auth = request.env["HTTP_AUTHORIZATION"]
+      token = auth&.start_with?("Bearer ") ? auth.delete_prefix("Bearer ") : nil
+      halt_json(:unauthorized, "Authorization required") unless token && valid_api_token?(token)
     end
 
     def guesser_protected!

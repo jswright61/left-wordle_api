@@ -122,6 +122,7 @@ Returns the number of possible answers remaining after each guess in a completed
 | 400 | `Date must be a valid calendar date` | Impossible calendar date |
 | 400 | `Date cannot be later than YYYY-MM-DD` | Future date |
 | 400 | `guesses must be an array of [word, pattern] pairs` | `guesses` is malformed |
+| 400 | `guesses cannot have more than 6 entries` | More guess pairs than a game can contain |
 
 ---
 
@@ -280,6 +281,7 @@ Mode validation runs before evaluation. A 400 is returned if the guess violates 
 | 400 | `Row index must be between 0 and 5` | `row_index` is outside the valid range |
 | 400 | `Mode must be regular, hard, or insane` | `mode` is present but not a recognized value |
 | 400 | `prev_guesses must be an array of [word, pattern] pairs` | `prev_guesses` is not an array, or any element is not a `[5-letter-word, 5-digit-pattern]` pair |
+| 400 | `prev_guesses cannot have more than 6 entries` | More prior guess pairs than a game can contain |
 | 400 | `{N}th letter must be {X}` | Hard/insane: correct-position letter not reused (e.g. `"1st letter must be C"`) |
 | 400 | `Guess must contain {X}` | Hard/insane: required letter (correct or present) is missing from the guess |
 | 400 | `{X} can't be in {N}th position` | Insane: present letter reused in a previously forbidden position |

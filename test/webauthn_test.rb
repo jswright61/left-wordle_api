@@ -37,6 +37,17 @@ class WebauthnTest < Minitest::Test
     assert_equal 400, last_response.status
   end
 
+  def test_register_rejects_an_email_already_in_use
+    register_new_device!(email: "taken@example.com")
+
+    with_second_device do
+      post_json "/api/v2/auth/register/begin", {email: "taken@example.com"}
+
+      assert_equal 409, last_response.status
+      assert_match(/already in use/, json_response.fetch("detail"))
+    end
+  end
+
   def test_register_finish_rejects_a_forged_credential
     post_json "/api/v2/auth/register/begin", {}
     challenge = json_response["options"]["challenge"]
@@ -182,13 +193,23 @@ class WebauthnTest < Minitest::Test
     assert_equal 401, last_response.status
   end
 
-  def test_cannot_revoke_your_only_passkey
+  def test_cannot_revoke_your_only_passkey_without_an_email
     body = register_new_device!
     get "/api/v2/account/passkeys"
     passkey_id = json_response["passkeys"].first["id"]
 
     delete "/api/v2/account/passkeys/#{passkey_id}", {}, csrf_env(body["csrf_token"])
     assert_equal 400, last_response.status
+  end
+
+  def test_can_revoke_your_only_passkey_when_an_email_is_set
+    body = register_new_device!(email: "lastkey@example.com")
+    get "/api/v2/account/passkeys"
+    passkey_id = json_response["passkeys"].first["id"]
+
+    delete "/api/v2/account/passkeys/#{passkey_id}", {}, csrf_env(body["csrf_token"])
+    assert last_response.ok?
+    assert_equal "revoked", json_response["status"]
   end
 
   def test_revoking_a_passkey_excludes_it_from_list_and_login
