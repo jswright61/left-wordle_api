@@ -1,0 +1,33 @@
+# Local dev only — combines client + API on one HTTPS origin so WebAuthn
+# (RP ID + secure context) behaves like the real staging/production
+# same-origin deployment instead of the localhost cross-origin workaround.
+#
+# Setup:
+#   1. echo "127.0.0.1 left-wordle.test" | sudo tee -a /etc/hosts
+#   2. Run the API:    cd api && rv run bundle exec rackup           # :9292
+#   3. Run this Caddy:  cd api && sudo caddy run --config config/caddy/dev/Caddyfile
+#      (sudo is needed once, to bind :443 and install Caddy's local CA
+#      into the system trust store — Caddy prompts for it automatically)
+#   4. Visit https://left-wordle.test
+#
+# Not deployed anywhere; not part of the production Caddyfile import chain.
+
+left-wordle.test {
+	# Caddy only auto-picks its internal (locally-trusted) CA for localhost,
+	# IPs, and .local names. .test isn't in that list, so without this it
+	# tries public ACME (Let's Encrypt) and fails — .test isn't a real
+	# public suffix.
+	tls internal
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:9292
+	}
+
+	handle {
+		# Relative to Caddy's working directory at launch (api/, per the
+		# `cd api &&` above), not to this Caddyfile's own location.
+		root * ../client
+		file_server
+		try_files {path} {path}.html {path}/index.html
+	}
+}
