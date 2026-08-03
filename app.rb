@@ -197,10 +197,6 @@ class LeftWordleApi < Sinatra::Base
     passkey_revoke_response
   end
 
-  post "/api/v2/import/local_data" do
-    import_local_data_response
-  end
-
   get "/api/v2/profile" do
     profile_get_response
   end
@@ -1033,10 +1029,9 @@ class LeftWordleApi < Sinatra::Base
       PlayedGame.first(user_id: user.id, puzzle_num: puzzle_num)
     end
 
-    # entry shape (agreed client<->API contract for both this endpoint and
-    # import_local_data_response): {puzzle_num, date, mode, game_status
-    # ("WIN"/"FAIL", already translated by the client from its own local
-    # result encoding), guesses (optional [word, pattern] pairs),
+    # entry shape (agreed client<->API contract): {puzzle_num, date, mode,
+    # game_status ("WIN"/"FAIL", already translated by the client from its
+    # own local result encoding), guesses (optional [word, pattern] pairs),
     # completed_at (optional), device_id (optional, the device it was
     # actually played on)}.
     def import_history_row!(user, entry)
@@ -1074,34 +1069,6 @@ class LeftWordleApi < Sinatra::Base
       true
     rescue Sequel::DatabaseError
       false
-    end
-
-    def import_local_data_response
-      user = require_authenticated_user!
-      require_csrf!
-      halt_json(:conflict, "Local data has already been imported for this account") if user.imported?
-
-      payload = request_payload
-      history_entries = payload["history"]
-      history_entries = [] if history_entries.nil?
-      halt_json(:bad_request, "history must be an array") unless history_entries.is_a?(Array)
-      halt_json(:payload_too_large, "Too many history entries") if history_entries.length > MAX_IMPORT_ENTRIES
-
-      imported_count = 0
-      DB.transaction do
-        history_entries.each { |entry| imported_count += 1 if import_history_row!(user, entry) }
-
-        find_or_create_profile(user).update(
-          preferences: Sequel.pg_json(payload["preferences"].is_a?(Hash) ? payload["preferences"] : {}),
-          game_state: Sequel.pg_json(payload["game_state"].is_a?(Hash) ? payload["game_state"] : {}),
-          statistics: Sequel.pg_json(payload["statistics"].is_a?(Hash) ? payload["statistics"] : {})
-        )
-        record_storage_snapshot!(user, "new user creation", payload)
-
-        user.update(imported_at: Sequel::CURRENT_TIMESTAMP)
-      end
-
-      json_response({imported_games: imported_count, status: "ok"})
     end
 
     def safe_date(value)

@@ -306,50 +306,6 @@ class WebauthnTest < Minitest::Test
     end
   end
 
-  # -- Local data import (one-time) ------------------------------------------
-
-  def test_import_local_data_is_one_time_only
-    body = register_new_device!
-    payload = {
-      history: [
-        {puzzle_num: 1, date: "2024-01-01", mode: "regular", game_status: "WIN",
-         guesses: [["crane", "22222"]], device_id: "11111111-1111-1111-1111-111111111111"}
-      ],
-      preferences: {darkTheme: true},
-      statistics: {currentStreak: 1, gamesPlayed: 1, gamesWon: 1}
-    }
-
-    post_json "/api/v2/import/local_data", payload, csrf_env(body["csrf_token"])
-    assert last_response.ok?
-    assert_equal 1, json_response["imported_games"]
-
-    post_json "/api/v2/import/local_data", payload, csrf_env(body["csrf_token"])
-    assert_equal 409, last_response.status
-
-    get "/api/v2/history"
-    assert_equal ["1"], json_response.keys
-  end
-
-  def test_import_local_data_records_a_new_user_creation_snapshot
-    body = register_new_device!
-    payload = {
-      preferences: {darkTheme: true},
-      statistics: {currentStreak: 1},
-      # Not restored into any account column -- just along for the ride
-      # into the snapshot as an extra safety net (see auth.js importLocalData).
-      settings_backup: {"v1.0.0" => {ts: "2026-01-01T00:00:00Z"}}
-    }
-
-    post_json "/api/v2/import/local_data", payload, csrf_env(body["csrf_token"])
-    assert last_response.ok?
-
-    snapshot = StorageSnapshot.where(user_id: body["user_id"]).order(:created_at).last
-    refute_nil snapshot
-    assert_equal "new user creation", snapshot.event
-    assert_equal true, snapshot.local_storage["preferences"]["darkTheme"]
-    assert_equal "2026-01-01T00:00:00Z", snapshot.local_storage["settings_backup"]["v1.0.0"]["ts"]
-  end
-
   # -- Storage snapshots (audit trail) -----------------------------------------
 
   def test_profile_download_records_an_update_client_local_storage_snapshot

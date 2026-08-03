@@ -11,8 +11,4 @@ class User < Sequel::Model(:users)
     self.webauthn_user_id ||= WebAuthn.generate_user_id
     super
   end
-
-  def imported?
-    !imported_at.nil?
-  end
 end
