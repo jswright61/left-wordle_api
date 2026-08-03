@@ -4,9 +4,9 @@ The `POST /api/v1/diagnostics` endpoint receives a JSON payload from the client 
 
 ## How It Works
 
-When a user clicks "Send Settings to Developers" in the Tools panel, the client collects all `localStorage` keys and POSTs them to `POST /api/v1/diagnostics`. The API validates the payload, then calls `send_diagnostics_email` which delivers a `.json` attachment to `left.wordle@wrightzone.com`.
+When a user clicks "Send Preferences to Developers" in the Tools panel, the client collects all `localStorage` keys and POSTs them to `POST /api/v1/diagnostics`. The API validates the payload, then calls `send_diagnostics_email` which delivers a `.json` attachment to `left.wordle@wrightzone.com`.
 
-The endpoint returns 503 with a descriptive error if SMTP is not configured, so the client can prompt the user to use "Download All Settings" instead.
+The endpoint returns 503 with a descriptive error if SMTP is not configured, so the client can prompt the user to use "Download All Preferences" instead.
 
 ## Configuration
 

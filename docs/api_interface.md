@@ -164,7 +164,7 @@ The latest available date is determined by the current time at UTC+14 (the world
 
 ### POST /api/v1/diagnostics
 
-Accepts a client settings snapshot as a JSON body and emails it to the developers as an attachment for troubleshooting.
+Accepts a client preferences snapshot as a JSON body and emails it to the developers as an attachment for troubleshooting.
 
 **Request Body** (`application/json`)
 
