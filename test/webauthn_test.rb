@@ -321,6 +321,49 @@ class WebauthnTest < Minitest::Test
     assert_equal true, snapshot.local_storage["preferences"]["darkTheme"]
   end
 
+  def test_local_storage_snapshot_records_a_new_user_creation_event
+    body = register_new_device!
+    post_json "/api/v2/profile/local_storage_snapshot",
+      {event: "new user creation", local_storage: {statistics: {gamesPlayed: 3}}},
+      csrf_env(body["csrf_token"])
+
+    assert last_response.ok?, last_response.body
+
+    snapshot = StorageSnapshot.where(user_id: body["user_id"]).order(:created_at).last
+    refute_nil snapshot
+    assert_equal "new user creation", snapshot.event
+    assert_equal 3, snapshot.local_storage["statistics"]["gamesPlayed"]
+  end
+
+  def test_local_storage_snapshot_rejects_an_unrecognized_event
+    body = register_new_device!
+    post_json "/api/v2/profile/local_storage_snapshot",
+      {event: "made up event", local_storage: {}},
+      csrf_env(body["csrf_token"])
+
+    assert_equal 400, last_response.status
+  end
+
+  def test_local_storage_snapshot_rejects_a_non_object_local_storage
+    body = register_new_device!
+    post_json "/api/v2/profile/local_storage_snapshot",
+      {event: "new user creation", local_storage: "not an object"},
+      csrf_env(body["csrf_token"])
+
+    assert_equal 400, last_response.status
+  end
+
+  def test_local_storage_snapshot_requires_authentication
+    post_json "/api/v2/profile/local_storage_snapshot", {event: "new user creation", local_storage: {}}
+    assert_equal 401, last_response.status
+  end
+
+  def test_local_storage_snapshot_requires_csrf
+    body = register_new_device!
+    post_json "/api/v2/profile/local_storage_snapshot", {event: "new user creation", local_storage: {}}
+    assert_equal 403, last_response.status
+  end
+
   # -- Stats adjustment audit trail -------------------------------------------
 
   def test_stats_adjust_records_a_before_and_after_snapshot

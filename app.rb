@@ -28,6 +28,10 @@ class LeftWordleApi < Sinatra::Base
   DATE_PATTERN = /\A\d{4}-\d{2}-\d{2}\z/
   MAX_DIAGNOSTICS_BODY_BYTES = 512 * 1024
   MAX_IMPORT_ENTRIES = 5_000
+  # Client-submitted storage_snapshots events -- deliberately narrow (only
+  # what a client actually pushes today) rather than accepting an arbitrary
+  # string, since this becomes a permanent audit-trail label.
+  CLIENT_SNAPSHOT_EVENTS = ["new user creation"].freeze
   CLIENT_DEVICE_ID_PATTERN = /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
   RATE_LIMIT_WINDOW_SECONDS = 60
   RATE_LIMIT_MAX_REQUESTS = 20
@@ -207,6 +211,10 @@ class LeftWordleApi < Sinatra::Base
 
   put "/api/v2/profile/game_state" do
     put_game_state_response
+  end
+
+  post "/api/v2/profile/local_storage_snapshot" do
+    local_storage_snapshot_response
   end
 
   get "/api/v2/history" do
@@ -940,6 +948,28 @@ class LeftWordleApi < Sinatra::Base
       record_storage_snapshot!(user, "update client local storage", data)
 
       json_response(data.merge(email: user.email, csrf_token: current_csrf_token))
+    end
+
+    # Client-initiated counterpart to record_storage_snapshot! above --
+    # currently only used at brand-new registration, to capture the client's
+    # pristine local storage before any server-side migration writes touch
+    # the account (see migration_rethink.md's Initial Registration section).
+    # Audit-trail only: this is never treated as a source of truth for
+    # preferences/game_state/statistics, which each have their own explicit
+    # push path.
+    def local_storage_snapshot_response
+      user = require_authenticated_user!
+      require_csrf!
+      payload = request_payload
+      event = payload["event"].to_s
+      unless CLIENT_SNAPSHOT_EVENTS.include?(event)
+        halt_json(:bad_request, "event must be one of: #{CLIENT_SNAPSHOT_EVENTS.join(", ")}")
+      end
+      local_storage = payload["local_storage"]
+      halt_json(:bad_request, "local_storage must be a JSON object") unless local_storage.is_a?(Hash)
+
+      record_storage_snapshot!(user, event, local_storage)
+      json_response({status: "ok"})
     end
 
     def put_preferences_response
