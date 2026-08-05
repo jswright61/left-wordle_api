@@ -325,7 +325,11 @@ class WebauthnTest < Minitest::Test
 
   def test_stats_adjust_records_a_before_and_after_snapshot
     body = register_new_device!
-    put_json "/api/v2/profile/statistics", {currentStreak: 2}, csrf_env(body["csrf_token"])
+    # Statistics are server-derived (see app.rb's apply_played_game_to_statistics!),
+    # not settable via a client PUT -- seed the "before" value directly.
+    # register_new_device! doesn't create a user_profiles row on its own, so this is
+    # a create, not an update.
+    UserProfile.create(user_id: body["user_id"], statistics: Sequel.pg_json({currentStreak: 2}))
 
     post_json "/api/v2/stats/adjust", {currentStreak: 9}, csrf_env(body["csrf_token"])
     assert last_response.ok?
@@ -338,7 +342,105 @@ class WebauthnTest < Minitest::Test
     assert_equal 9, snapshot.after["currentStreak"]
   end
 
+  # -- Stats/streak derivation from played_games events -----------------------
+
+  def test_history_import_extends_streak_for_contiguous_wins
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    import_history!([
+      {puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id},
+      {puzzle_num: 501, date: "2026-01-02", game_status: "WIN", guesses: n_guesses(4), device_id: device_id}
+    ], body["csrf_token"])
+
+    stats = get_profile!["statistics"]
+    assert_equal 2, stats["gamesPlayed"]
+    assert_equal 2, stats["gamesWon"]
+    assert_equal 2, stats["currentStreak"]
+    assert_equal 2, stats["maxStreak"]
+    assert_equal 501, stats["currentStreakAnchorPuzzleNum"]
+    assert_equal 1, stats["guesses"]["3"]
+    assert_equal 1, stats["guesses"]["4"]
+  end
+
+  def test_history_import_gap_is_archival_only_and_does_not_move_stats
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_id = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+    # Puzzle 501 never arrives -- 502 lands with a gap behind it.
+    import_history!([{puzzle_num: 502, date: "2026-01-03", game_status: "WIN", guesses: n_guesses(2), device_id: device_id}], csrf)
+
+    stats = get_profile!["statistics"]
+    assert_equal 1, stats["gamesPlayed"], "the gapped puzzle must not count toward stats"
+    assert_equal 500, stats["currentStreakAnchorPuzzleNum"]
+
+    history = json_get("/api/v2/history")
+    assert history.key?("502"), "the gapped game must still be preserved in history"
+  end
+
+  def test_fail_at_anchor_plus_one_resets_current_streak_but_keeps_max_streak
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    import_history!([
+      {puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id},
+      {puzzle_num: 501, date: "2026-01-02", game_status: "FAIL", guesses: n_guesses(6), device_id: device_id}
+    ], body["csrf_token"])
+
+    stats = get_profile!["statistics"]
+    assert_equal 0, stats["currentStreak"]
+    assert_equal 1, stats["maxStreak"]
+    assert_equal 501, stats["currentStreakAnchorPuzzleNum"]
+    assert_equal 2, stats["gamesPlayed"]
+    assert_equal 1, stats["guesses"]["fail"]
+  end
+
+  def test_multi_device_same_puzzle_first_arrival_wins_and_loser_is_preserved
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_a = SecureRandom.uuid
+    device_b = SecureRandom.uuid
+
+    import_history!([{puzzle_num: 700, date: "2026-03-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_a}], csrf)
+    import_history!([{puzzle_num: 700, date: "2026-03-01", game_status: "FAIL", guesses: n_guesses(6), device_id: device_b}], csrf)
+
+    stats = get_profile!["statistics"]
+    assert_equal 1, stats["gamesPlayed"], "only the canonical (first-arrival) row should count"
+    assert_equal 1, stats["gamesWon"]
+    assert_equal 1, stats["currentStreak"]
+
+    history = json_get("/api/v2/history")
+    assert_equal "WIN", history["700"]["game_status"], "history should surface the first-arriving (canonical) row"
+
+    rows = PlayedGame.where(user_id: body["user_id"], puzzle_num: 700).all
+    assert_equal 2, rows.length, "the losing device's row must be preserved, not discarded"
+    assert(rows.any? { |r| r.client_device_id == device_b && r.game_status == "FAIL" })
+  end
+
   private
+
+  def import_history!(entries, csrf_token)
+    post_json "/api/v2/history/import", {history: entries}, csrf_env(csrf_token)
+    assert last_response.ok?, last_response.body
+    json_response
+  end
+
+  def get_profile!
+    get "/api/v2/profile"
+    assert last_response.ok?, last_response.body
+    json_response
+  end
+
+  def json_get(path)
+    get path
+    assert last_response.ok?, last_response.body
+    json_response
+  end
+
+  # played_games.guesses isn't format-validated on import -- only its
+  # length matters to the stats/streak derivation under test here.
+  def n_guesses(count)
+    Array.new(count) { ["crane", "01001"] }
+  end
 
   def register_new_device!(email: nil)
     post_json "/api/v2/auth/register/begin", email ? {email: email} : {}

@@ -209,10 +209,6 @@ class LeftWordleApi < Sinatra::Base
     put_game_state_response
   end
 
-  put "/api/v2/profile/statistics" do
-    put_statistics_response
-  end
-
   get "/api/v2/history" do
     history_get_response
   end
@@ -608,6 +604,8 @@ class LeftWordleApi < Sinatra::Base
         country_code: country_code, completed_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
         user_id: user_id
       )
+
+      apply_played_game_to_statistics!(User[user_id], puzzle_number, game_status) if user_id
     rescue Sequel::DatabaseError
       nil
     end
@@ -958,13 +956,6 @@ class LeftWordleApi < Sinatra::Base
       json_response({status: "ok"})
     end
 
-    def put_statistics_response
-      user = require_authenticated_user!
-      require_csrf!
-      find_or_create_profile(user).update(statistics: Sequel.pg_json(request_payload))
-      json_response({status: "ok"})
-    end
-
     def stats_adjust_response
       user = require_authenticated_user!
       require_csrf!
@@ -984,12 +975,19 @@ class LeftWordleApi < Sinatra::Base
 
     def history_get_response
       user = require_authenticated_user!
-      json_response(history_hash_for(PlayedGame.where(user_id: user.id).all))
+      rows = PlayedGame.where(user_id: user.id).order(:created_at, :id).all
+      json_response(history_hash_for(rows))
     end
 
+    # Rows are expected in ascending created_at (server-arrival) order --
+    # first arrival wins on a puzzle_num collision between devices, so once a
+    # key is set here it's never overwritten. See
+    # canonical_played_game_for/CANONICALIZATION in the stats section below.
     def history_hash_for(rows)
       rows.each_with_object({}) do |row, hash|
-        hash[row.puzzle_num.to_s] = {
+        key = row.puzzle_num.to_s
+        next if hash.key?(key)
+        hash[key] = {
           puzzle_num: row.puzzle_num,
           date: row.date.iso8601,
           mode: row.mode,
@@ -1010,9 +1008,7 @@ class LeftWordleApi < Sinatra::Base
       imported = 0
       skipped = 0
       entries.each do |entry|
-        if existing_played_game_for(user, entry)
-          skipped += 1
-        elsif import_history_row!(user, entry)
+        if import_history_row!(user, entry)
           imported += 1
         else
           skipped += 1
@@ -1022,18 +1018,19 @@ class LeftWordleApi < Sinatra::Base
       json_response({imported: imported, skipped: skipped})
     end
 
-    def existing_played_game_for(user, entry)
-      return nil unless entry.is_a?(Hash)
-      puzzle_num = Integer(entry["puzzle_num"], exception: false)
-      return nil unless puzzle_num
-      PlayedGame.first(user_id: user.id, puzzle_num: puzzle_num)
-    end
-
     # entry shape (agreed client<->API contract): {puzzle_num, date, mode,
     # game_status ("WIN"/"FAIL", already translated by the client from its
     # own local result encoding), guesses (optional [word, pattern] pairs),
     # completed_at (optional), device_id (optional, the device it was
     # actually played on)}.
+    #
+    # Always attempts the (client_device_id, date)-scoped upsert, even if the
+    # user already has a row for this puzzle_num from a different device --
+    # every device's data is preserved (see migration_rethink.md's
+    # preserve-information principle). "skipped" here means no new row was
+    # created for this device+date, not "this puzzle was already known" --
+    # whether the row counts toward stats is decided separately by
+    # apply_played_game_to_statistics!, based on server-arrival canonicality.
     def import_history_row!(user, entry)
       return false unless entry.is_a?(Hash)
 
@@ -1051,6 +1048,8 @@ class LeftWordleApi < Sinatra::Base
       guesses = entry["guesses"].is_a?(Array) ? entry["guesses"] : []
       completed_at = safe_time(entry["completed_at"])
 
+      is_new_row = PlayedGame.where(client_device_id: client_device_id, date: date).empty?
+
       DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
@@ -1066,9 +1065,86 @@ class LeftWordleApi < Sinatra::Base
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
         completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
       )
-      true
+
+      apply_played_game_to_statistics!(user, puzzle_num, game_status) if game_status
+      is_new_row
     rescue Sequel::DatabaseError
       false
+    end
+
+    # -- Stats/streak derivation (server-authoritative, event-driven) --------
+    #
+    # Statistics are never trusted as a client-pushed blob (see
+    # migration_rethink.md -- a prior full-recompute-from-history approach
+    # caused real data loss, and a full-blob push from one device silently
+    # clobbers another device's progress). Instead every played_games row --
+    # whether it arrived via live play or a history import/backfill -- is
+    # applied here as a single incremental event.
+    #
+    # currentStreakAnchorPuzzleNum tracks the last puzzle_num already
+    # reflected in the numbers. A row only moves the numbers if it's the
+    # canonical (earliest server-arrival) row for its puzzle_num AND its
+    # puzzle_num is exactly anchor + 1. Anything else -- a losing duplicate,
+    # or a row landing behind the anchor (older backfill, out-of-order
+    # arrival) -- is archival only: it's preserved in played_games/history
+    # but never changes stats, regardless of the order events arrive in.
+    def canonical_played_game_for(user, puzzle_num)
+      PlayedGame.where(user_id: user.id, puzzle_num: puzzle_num).order(:created_at, :id).first
+    end
+
+    def apply_played_game_to_statistics!(user, puzzle_num, game_status)
+      return unless user && %w[WIN FAIL].include?(game_status)
+
+      DB.transaction do
+        profile = UserProfile.where(user_id: user.id).for_update.first || find_or_create_profile(user)
+
+        canonical = canonical_played_game_for(user, puzzle_num)
+        next unless canonical && canonical.game_status == game_status
+
+        stats = profile.statistics || {}
+        anchor = stats["currentStreakAnchorPuzzleNum"]
+        next unless anchor.nil? || puzzle_num == anchor + 1
+
+        profile.update(statistics: Sequel.pg_json(next_statistics_for(stats, canonical, game_status, puzzle_num)))
+      end
+    end
+
+    def next_statistics_for(stats, canonical, game_status, puzzle_num)
+      updated = stats.dup
+      guesses = (stats["guesses"] || {}).dup
+      updated["gamesPlayed"] = (stats["gamesPlayed"] || 0) + 1
+      updated["gamesWon"] = stats["gamesWon"] || 0
+      updated["maxStreak"] = stats["maxStreak"] || 0
+
+      if game_status == "WIN"
+        updated["currentStreak"] = (stats["currentStreak"] || 0) + 1
+        updated["maxStreak"] = [updated["maxStreak"], updated["currentStreak"]].max
+        updated["gamesWon"] += 1
+
+        # Imported/backfilled entries may not carry a guesses array (the
+        # client's history-import payload doesn't include one) -- when that
+        # guess count is unknown, still count the win, just skip the
+        # per-guess-count histogram bucket for this row. canonical.guesses
+        # comes back from Sequel's pg_json extension as a JSONBArray/
+        # JSONArray wrapper (not a plain Array), so check for either.
+        raw_guesses = canonical.guesses
+        is_array = raw_guesses.is_a?(Array) || raw_guesses.is_a?(Sequel::Postgres::JSONArrayBase)
+        guess_count = is_array ? raw_guesses.length : nil
+        if guess_count && (1..6).cover?(guess_count)
+          guesses[guess_count.to_s] = (guesses[guess_count.to_s] || 0) + 1
+        end
+      else
+        updated["currentStreak"] = 0
+        guesses["fail"] = (guesses["fail"] || 0) + 1
+      end
+
+      updated["guesses"] = guesses
+      updated["currentStreakAnchorPuzzleNum"] = puzzle_num
+      updated["winPercentage"] = updated["gamesPlayed"].positive? ? ((updated["gamesWon"].to_f / updated["gamesPlayed"]) * 100).round : 0
+
+      guess_sum = (1..6).sum { |n| n * (guesses[n.to_s] || 0) }
+      updated["averageGuesses"] = updated["gamesWon"].to_i.positive? ? (guess_sum.to_f / updated["gamesWon"] * 100).round / 100.0 : 0
+      updated
     end
 
     def safe_date(value)
