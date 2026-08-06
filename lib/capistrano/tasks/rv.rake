@@ -20,6 +20,13 @@ namespace :rv do
       set :rv_ruby_bin, ruby_bin
       set :rv_path, path
       set :default_env, fetch(:default_env, {}).merge("PATH" => path)
+
+      # capistrano/setup snapshots SSHKit.config.default_env from :default_env
+      # once at Capfile load time, before this task ever runs, so `set
+      # :default_env` above (which replaces the hash object) never reaches
+      # SSHKit. Update SSHKit's actual config directly so later `execute`
+      # calls (e.g. bundler:config) inherit PATH.
+      SSHKit.config.default_env = SSHKit.config.default_env.merge("PATH" => path)
     end
   end
 end
