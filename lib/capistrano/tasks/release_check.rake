@@ -1,18 +1,45 @@
 # frozen_string_literal: true
 
-# Capistrano's valid_release_path? expects 14-digit timestamps; override to
-# accept the custom format set by deploy:set_readable_release_path.
-module Capistrano
-  module DSL
-    module Paths
-      def valid_release_path?(release)
-        !!release.match(/\A\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2}__/)
+# Capistrano's deploy:cleanup hardcodes a /^\d{14}$/ regex inline (it does not
+# go through an overridable valid_release_path? method), so it never recognizes
+# the readable release names set by deploy:set_readable_release_path. Redefine
+# the task with the same logic, matching our format instead.
+Rake::Task["deploy:cleanup"].clear_actions
+
+namespace :deploy do
+  desc "Clean up old releases"
+  task :cleanup do
+    on release_roles :all do |host|
+      releases = capture(:ls, "-x", releases_path).split
+      valid, invalid = releases.partition { |e| /\A\d{4}-\d{2}-\d{2}_\d{2}\.\d{2}\.\d{2}__/.match?(e) }
+
+      warn t(:skip_cleanup, host: host.to_s) if invalid.any?
+
+      if valid.count >= fetch(:keep_releases)
+        info t(:keeping_releases, host: host.to_s, keep_releases: fetch(:keep_releases), releases: valid.count)
+        directories = (valid - valid.last(fetch(:keep_releases))).map do |release|
+          releases_path.join(release).to_s
+        end
+        if test("[ -d #{current_path} ]")
+          current_release = capture(:readlink, current_path).to_s
+          if directories.include?(current_release)
+            warn t(:wont_delete_current_release, host: host.to_s)
+            directories.delete(current_release)
+          end
+        else
+          debug t(:no_current_release, host: host.to_s)
+        end
+        if directories.any?
+          directories.each_slice(100) do |directories_batch|
+            execute :rm, "-rf", *directories_batch
+          end
+        else
+          info t(:no_old_releases, host: host.to_s, keep_releases: fetch(:keep_releases))
+        end
       end
     end
   end
-end
 
-namespace :deploy do
   task :check_release_tag do
     repo = fetch(:repo_url)
     deploy_tag = ENV["DEPLOY_TAG"]
