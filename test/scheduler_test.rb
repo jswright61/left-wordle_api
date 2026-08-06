@@ -8,8 +8,20 @@ require_relative "../lib/models/scheduled_task"
 class SchedulerTest < Minitest::Test
   DUMMY_TASK_NAME = "scheduler_test:dummy_task"
 
+  REAL_TASK_NAMES = %w[stats:daily_summary storage_snapshots:prune].freeze
+
   def setup
     ScheduledTask.where(name: DUMMY_TASK_NAME).delete
+
+    # These rows are real production task names seeded via `scheduler:seed`.
+    # scheduler:tick pulls every due row from the table, not just the ones a
+    # test creates, and the fresh Rake::Application below only loads
+    # scheduler.rake -- so if these are left in place and due, tick tries to
+    # invoke tasks that were never loaded and warns "Don't know how to build
+    # task" on every run. Remove them for the duration of the test and
+    # restore in teardown.
+    @original_real_tasks = REAL_TASK_NAMES.map { |name| ScheduledTask.first(name: name) }
+    ScheduledTask.where(name: REAL_TASK_NAMES).delete
 
     Rake.application = Rake::Application.new
     load File.expand_path("../lib/tasks/scheduler.rake", __dir__)
@@ -17,6 +29,10 @@ class SchedulerTest < Minitest::Test
 
   def teardown
     ScheduledTask.where(name: DUMMY_TASK_NAME).delete
+
+    REAL_TASK_NAMES.zip(@original_real_tasks).each do |name, original|
+      restore_scheduled_task_row(name, original)
+    end
   end
 
   def test_tick_runs_a_due_task_and_records_last_run_at
