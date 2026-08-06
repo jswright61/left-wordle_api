@@ -29,7 +29,7 @@ namespace :puma do
     end
   end
 
-  desc "Upload and enable the systemd service (run during server setup, and again after any Ruby version bump)"
+  desc "Upload and enable the systemd service, resolving the current rv Ruby paths (runs automatically every deploy so Ruby version bumps can't drift out of sync with the unit file)"
   task setup: "rv:install" do
     on roles(:app) do
       service = fetch(:puma_service)
@@ -45,4 +45,5 @@ namespace :puma do
   end
 end
 
+after "deploy:published", "puma:setup"
 after "deploy:published", "puma:restart"

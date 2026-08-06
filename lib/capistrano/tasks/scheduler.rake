@@ -10,7 +10,7 @@ namespace :scheduler do
     end
   end
 
-  desc "Upload and enable the systemd service + timer (run during server setup, and again after any Ruby version bump)"
+  desc "Upload and enable the systemd service + timer, resolving the current rv Ruby paths (runs automatically every deploy so Ruby version bumps can't drift out of sync with the unit file)"
   task setup: "rv:install" do
     on roles(:app) do
       service = fetch(:scheduler_service)
@@ -30,4 +30,5 @@ namespace :scheduler do
   end
 end
 
+after "deploy:published", "scheduler:setup"
 after "deploy:updated", "scheduler:seed"
