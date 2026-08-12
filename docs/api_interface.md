@@ -2,7 +2,7 @@
 
 Base path: `/api/v1`
 
-All responses use `Content-Type: application/json` and `Cache-Control: no-store`. All error bodies use a `detail` field.
+All responses use `Content-Type: application/json`. Unless an endpoint states otherwise, API responses use `Cache-Control: no-store`. All error bodies use a `detail` field.
 
 ---
 
@@ -50,6 +50,12 @@ Returns application version information.
 
 Returns an encrypted representation of the puzzle answer for a given date. The answer is XOR-encrypted with a shared key so that the plaintext is not stored in client game state.
 
+This endpoint has no telemetry side effects and may be cached. Successful responses use:
+
+```text
+Cache-Control: public, max-age=300, s-maxage=86400
+```
+
 **Query Parameters**
 
 | Name | Type | Required | Description |
@@ -79,6 +85,51 @@ Returns an encrypted representation of the puzzle answer for a given date. The a
 | 400 | `Date must use YYYY-MM-DD format` | Unparseable date string |
 | 400 | `Date must be a valid calendar date` | Structurally valid but impossible date |
 | 400 | `Date cannot be later than YYYY-MM-DD` | Date is in the future |
+
+---
+
+### POST /api/v1/game/start
+
+Records that a client started the puzzle for a date. The request is idempotent for a device/date pair: retries preserve the first `initiated_at` timestamp and update only fields that are safe to merge. If a completion arrives before a delayed start event, the delayed start fills `initiated_at` from the existing `completed_at` timestamp and preserves the completed game row.
+
+This endpoint is telemetry-only. The client should not block gameplay on it.
+
+**Request Body** (`application/json`)
+
+```json
+{
+  "date": "2021-06-19",
+  "puzzle_num": 0
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
+| `puzzle_num` | integer | Yes | Days since puzzle epoch; must match the submitted date |
+
+**Headers**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Device-Id` | No | UUID used to associate anonymous telemetry with a local browser/device. If missing or malformed, the endpoint returns success without writing telemetry. |
+| `CF-IPCountry` | No | Set by Cloudflare. When present and valid, it is stored as the game-start country code. |
+
+**Response 200**
+```json
+{ "status": "recorded" }
+```
+
+**Error Responses**
+
+| Status | `detail` | Condition |
+|--------|----------|-----------|
+| 400 | `Date is required` | `date` field missing |
+| 400 | `Date must use YYYY-MM-DD format` | Unparseable date string |
+| 400 | `Date must be a valid calendar date` | Impossible calendar date |
+| 400 | `Date cannot be later than YYYY-MM-DD` | Future date |
+| 400 | `puzzle_num is required` | `puzzle_num` field missing or not an integer |
+| 400 | `puzzle_num must match date` | Submitted puzzle number does not match the submitted date |
 
 ---
 

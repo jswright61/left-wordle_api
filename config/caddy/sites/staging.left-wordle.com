@@ -7,17 +7,24 @@ staging.left-wordle.com {
 
 	handle {
 		root * /home/deploy/staging.left-wordle.com/current
-		file_server
 		try_files {path} {path}.html {path}/index.html
 
-		# index.html references hashed asset URLs (?v=<content-hash>, set by
-		# deploy:write_app_config) that are safe to cache forever -- but
-		# index.html itself has no such busting and must always revalidate,
-		# or browsers can keep serving a stale copy (with stale asset
-		# references, e.g. an outdated api_base_url) via HTTP heuristic
-		# caching long after a new deploy.
-		@html path / *.html
-		header @html Cache-Control "no-cache"
+		# Mutable app files rely on browser revalidation plus Cloudflare purge
+		# at deploy time. s-maxage lets Cloudflare keep the edge hot without
+		# asking browsers to keep stale copies after a release.
+		@html path / *.html /privacy /release-notes /logins_and_passkeys /things-to-test /retire-words /seed-legacy
+		header @html Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
+
+		@releaseMarkers path /app_version.js /version.json
+		header @releaseMarkers Cache-Control "no-cache"
+
+		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css
+		header @clientCode Cache-Control "public, max-age=0, s-maxage=31536000, must-revalidate"
+
+		@staticAssets path *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.xml *.txt
+		header @staticAssets Cache-Control "public, max-age=86400, s-maxage=2592000"
+
+		file_server
 	}
 
 	log {

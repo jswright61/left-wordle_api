@@ -119,6 +119,10 @@ class LeftWordleApi < Sinatra::Base
     answer_response
   end
 
+  post "/api/v1/game/start" do
+    start_response
+  end
+
   post "/api/v1/game/guess" do
     guess_response
   end
@@ -500,10 +504,7 @@ class LeftWordleApi < Sinatra::Base
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
       answer = LeftWordle::Game.answer_for(puzzle_number)
 
-      if (client_device_id = extract_client_device_id)
-        record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number, current_user&.id)
-      end
-
+      headers "Cache-Control" => "public, max-age=300, s-maxage=86400"
       json_response({
         encrypted_answer: encrypt_answer(answer),
         puzzle_num: puzzle_number,
@@ -531,6 +532,22 @@ class LeftWordleApi < Sinatra::Base
         guesses[i][1].to_s == "22222" ? 0 : answers_remaining_for(guesses[0..i])
       }
       json_response({date: date.iso8601, remaining_counts: counts})
+    end
+
+    def start_response
+      payload = request_payload
+      date = requested_date(payload["date"])
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+      submitted_puzzle_number = Integer(payload["puzzle_num"], exception: false)
+
+      halt_json(:bad_request, "puzzle_num is required") unless submitted_puzzle_number
+      halt_json(:bad_request, "puzzle_num must match date") unless submitted_puzzle_number == puzzle_number
+
+      if (client_device_id = extract_client_device_id)
+        record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number, current_user&.id)
+      end
+
+      json_response({status: "recorded"})
     end
 
     def complete_response
@@ -579,8 +596,13 @@ class LeftWordleApi < Sinatra::Base
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
-          initiated_at: Sequel.function(:coalesce, Sequel[:played_games][:initiated_at], Sequel[:excluded][:initiated_at]),
-          country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
+          initiated_at: Sequel.function(
+            :coalesce,
+            Sequel[:played_games][:initiated_at],
+            Sequel[:played_games][:completed_at],
+            Sequel[:excluded][:initiated_at]
+          ),
+          country_code: Sequel.function(:coalesce, Sequel[:played_games][:country_code], Sequel[:excluded][:country_code]),
           # A device's rows attach to a user once it has an active session,
           # and never get un-attached by a later anonymous request.
           user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
