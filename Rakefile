@@ -356,5 +356,6 @@ end
 
 load File.join(__dir__, "lib/tasks/scheduler.rake")
 load File.join(__dir__, "lib/tasks/storage_snapshots.rake")
+load File.join(__dir__, "lib/tasks/cloudflare_cache_rules.rake")
 
 task default: :test
