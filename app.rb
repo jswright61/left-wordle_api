@@ -135,6 +135,10 @@ class LeftWordleApi < Sinatra::Base
     complete_response
   end
 
+  post "/api/v1/game/progress" do
+    progress_response
+  end
+
   post "/api/v1/diagnostics" do
     diagnostics_response
   end
@@ -581,6 +585,42 @@ class LeftWordleApi < Sinatra::Base
       json_response({status: "recorded"})
     end
 
+    # Live per-guess save of an in-progress (not yet WIN/FAIL) game -- called
+    # after every guess, from every device, logged in or not (see
+    # online_play_redesign.md's "Playing online" section and this session's
+    # extension of it to offline devices too: server-side visibility into
+    # abandoned games, and the basis for an online device resuming a game
+    # started on a different device). Same played_games row/target as
+    # completion; a device's progress and its eventual completion are just
+    # two writes to the same (client_device_id, date) row.
+    def progress_response
+      payload = request_payload
+      date = requested_date(payload["date"])
+
+      mode = payload.fetch("mode", "regular").to_s
+      halt_json(:bad_request, "Mode must be regular, hard, or insane") unless %w[regular hard insane].include?(mode)
+
+      guesses = payload.fetch("guesses", [])
+      unless guesses.is_a?(Array) && guesses.all? { |p|
+        p.is_a?(Array) && p.length == 2 &&
+            p[0].to_s.match?(/\A[a-zA-Z]{5}\z/) &&
+            p[1].to_s.match?(/\A[012]{5}\z/)
+      }
+        halt_json(:bad_request, "guesses must be an array of [word, pattern] pairs")
+      end
+      if guesses.length > LeftWordle::Game::MAX_GUESSES
+        halt_json(:bad_request, "guesses cannot have more than #{LeftWordle::Game::MAX_GUESSES} entries")
+      end
+
+      puzzle_number = LeftWordle::Game.puzzle_number_for(date)
+
+      if (client_device_id = extract_client_device_id)
+        record_game_progress!(client_device_id, extract_country_code, date, puzzle_number, mode, guesses, current_user&.id)
+      end
+
+      json_response({status: "recorded"})
+    end
+
     def extract_client_device_id
       raw_device_id = request.env["HTTP_X_DEVICE_ID"]
       raw_device_id if raw_device_id.is_a?(String) && raw_device_id.match?(CLIENT_DEVICE_ID_PATTERN)
@@ -616,13 +656,22 @@ class LeftWordleApi < Sinatra::Base
       nil
     end
 
-    def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil)
+    # Shared upsert for both a live in-progress save and a final completion --
+    # same (client_device_id, date) target row either way, so a game's
+    # progress writes and its eventual completion write are just two calls
+    # against the same row. game_status is coalesced (not overwritten
+    # unconditionally) so a progress call that lands *after* completion
+    # (e.g. a lagging retry) can never reset a recorded WIN/FAIL back to
+    # unset. completed_at is only ever set by a completion call
+    # (`completed:` true) and, like the other fields, coalesced so it's
+    # never clobbered back to nil by a later progress write.
+    def record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, completed:)
       DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
           mode: Sequel[:excluded][:mode],
-          game_status: Sequel[:excluded][:game_status],
+          game_status: Sequel.function(:coalesce, Sequel[:excluded][:game_status], Sequel[:played_games][:game_status]),
           guesses: Sequel[:excluded][:guesses],
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
           country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
@@ -631,11 +680,22 @@ class LeftWordleApi < Sinatra::Base
       ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
-        country_code: country_code, completed_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
-        user_id: user_id
+        country_code: country_code, completed_at: (completed ? Sequel::CURRENT_TIMESTAMP : nil),
+        updated_at: Sequel::CURRENT_TIMESTAMP, user_id: user_id
       )
+    end
 
+    def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil)
+      record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, completed: true)
       apply_played_game_to_statistics!(User[user_id], puzzle_number, game_status) if user_id
+    rescue Sequel::DatabaseError
+      nil
+    end
+
+    # No game_status (game isn't over yet) and no stats side effect --
+    # apply_played_game_to_statistics! only ever runs from a completion.
+    def record_game_progress!(client_device_id, country_code, date, puzzle_number, mode, guesses, user_id = nil)
+      record_game_event!(client_device_id, country_code, date, puzzle_number, mode, nil, guesses, user_id, completed: false)
     rescue Sequel::DatabaseError
       nil
     end

@@ -365,6 +365,98 @@ class AppTest < Minitest::Test
     assert_equal 1, PlayedGame.where(client_device_id: client_device_id).count
   end
 
+  def test_post_progress_records_an_in_progress_game_with_no_status_or_completed_at
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]]), request_env
+
+    assert last_response.ok?
+    assert_equal({"status" => "recorded"}, json_response)
+
+    played_game = PlayedGame.first(client_device_id: client_device_id)
+    refute_nil played_game
+    assert_equal [["train", "01000"]], played_game.guesses.to_a
+    assert_nil played_game.game_status
+    assert_nil played_game.completed_at
+  end
+
+  def test_post_progress_allows_empty_guesses
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    post_json "/api/v1/game/progress", {date: "2021-06-19", mode: "regular", guesses: []}, {"HTTP_X_DEVICE_ID" => client_device_id}
+
+    assert last_response.ok?
+    assert_equal [], PlayedGame.first(client_device_id: client_device_id).guesses.to_a
+  end
+
+  def test_post_progress_rejects_malformed_guess_pair
+    post_json "/api/v1/game/progress", {date: "2021-06-19", mode: "regular", guesses: [["train", "999"]]}
+
+    assert_equal 400, last_response.status
+    assert_match(/word, pattern/, json_response.fetch("detail"))
+  end
+
+  def test_post_progress_rejects_more_than_max_guesses
+    guesses = Array.new(LeftWordle::Game::MAX_GUESSES + 1) { ["crane", "00000"] }
+    post_json "/api/v1/game/progress", {date: "2021-06-19", mode: "regular", guesses: guesses}
+
+    assert_equal 400, last_response.status
+    assert_match(/cannot have more than/, json_response.fetch("detail"))
+  end
+
+  def test_post_progress_rejects_invalid_mode
+    post_json "/api/v1/game/progress", {date: "2021-06-19", mode: "bogus", guesses: [["crane", "22222"]]}
+
+    assert_equal 400, last_response.status
+    assert_match(/Mode must be/, json_response.fetch("detail"))
+  end
+
+  def test_post_progress_is_idempotent_and_updates_guesses_in_place
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]]), request_env
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"], ["crane", "22222"]]), request_env
+
+    assert_equal 1, PlayedGame.where(client_device_id: client_device_id).count
+    assert_equal [["train", "01000"], ["crane", "22222"]], PlayedGame.first(client_device_id: client_device_id).guesses.to_a
+  end
+
+  def test_post_progress_after_completion_does_not_clobber_game_status_or_completed_at
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+
+    post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]), request_env
+    completed_at = PlayedGame.first(client_device_id: client_device_id).completed_at
+
+    # A lagging progress retry landing after completion (e.g. a slow
+    # network) must not resurrect the row as "in progress".
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]]), request_env
+
+    played_game = PlayedGame.first(client_device_id: client_device_id)
+    assert_equal "WIN", played_game.game_status
+    assert_equal completed_at, played_game.completed_at
+  end
+
+  def test_post_complete_after_progress_sets_status_and_completed_at
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]]), request_env
+    post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["train", "01000"], ["crane", "22222"]]), request_env
+
+    played_game = PlayedGame.first(client_device_id: client_device_id)
+    assert_equal "WIN", played_game.game_status
+    refute_nil played_game.completed_at
+    assert_equal [["train", "01000"], ["crane", "22222"]], played_game.guesses.to_a
+  end
+
+  def test_post_progress_returns_recorded_even_without_device_id_header
+    post_json "/api/v1/game/progress", {date: "2021-06-19", mode: "regular", guesses: [["crane", "22222"]]}
+
+    assert last_response.ok?
+    assert_equal({"status" => "recorded"}, json_response)
+  end
+
   def test_get_answer_rejects_a_future_date
     future_date = LeftWordle::Game.latest_available_date + 1
     get "/api/v1/game/answer", date: future_date.iso8601
