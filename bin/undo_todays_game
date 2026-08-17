@@ -1,0 +1,215 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+require_relative "../lib/left_wordle/game"
+
+# Rewinds a Left Wordle "Download All Preferences" settings export so the
+# current day's game looks as though it was never played: gameState rolls
+# back to reflect the previous day's finished puzzle (with matching
+# timestamps), today's entry disappears from history, and statistics have
+# exactly today's increment reversed out (streak, games played/won, guess
+# distribution, win % and average guesses).
+#
+# Deliberately reverses today's specific increment rather than recomputing
+# statistics wholesale from history -- StatisticsEngine.updateStatistics in
+# client/src/wordle.js only ever mutates the stored statistics blob
+# incrementally per completed game, so on a real account it can (and
+# typically does) diverge from what a from-scratch history+legacy replay
+# would produce (legacy_stats baselines are frequently stale/zeroed once
+# history-tracking takes over). Reversing just today's delta stays correct
+# regardless of that drift.
+#
+# Mirrors client/src/wordle.js's GameStateManager / StatisticsEngine.updateStatistics
+# / HistoryManager.isContinuingStreak and api/app.rb's encrypt_answer --
+# keep this in sync if those change.
+
+ANSWER_XOR_KEY = "xQ7mN2vK9pL4wR8tY1sB6dF3hJ0cG5eA"
+
+def encrypt_answer(word)
+  bytes = word.each_char.each_with_index.map { |c, i| c.ord ^ ANSWER_XOR_KEY[i % ANSWER_XOR_KEY.length].ord }
+  bytes.pack("C*").unpack1("H*")
+end
+
+def win?(result)
+  result.is_a?(Numeric) && result >= 1 && result <= 6
+end
+
+# Reverses exactly the increment StatisticsEngine.updateStatistics applied
+# when removed_entry was recorded, using yesterday_entry (already looked up
+# by the caller) to answer the same isContinuingStreak question the client
+# asked at the time.
+#
+# A loss's currentStreak-before is exactly recoverable: updateStatistics
+# sets terminatedStreak = currentStreak (the pre-loss value) right before
+# zeroing currentStreak, so today's stored terminatedStreak *is* that value.
+# What terminatedStreak held immediately before today, though, is not
+# recoverable (a loss unconditionally overwrites it) -- cleared to nil,
+# which is exactly correct when today's loss is undone into a live streak
+# (current_before > 0, so no termination banner should show) and a harmless
+# default in the rarer case current_before is already 0.
+def undo_statistics(stats, removed_entry, yesterday_entry)
+  stats = stats.dup
+  guesses = stats["guesses"].is_a?(Hash) ? stats["guesses"].dup : {}
+  result = removed_entry["result"]
+  is_win = win?(result)
+  current_after = stats["currentStreak"].to_i
+  max_after = stats["maxStreak"].to_i
+
+  if is_win
+    key = result.to_i.to_s
+    guesses[key] = [guesses[key].to_i - 1, 0].max
+
+    was_continuing = !!(yesterday_entry && win?(yesterday_entry["result"]) &&
+      yesterday_entry["puzzle_num"] == removed_entry["puzzle_num"] - 1)
+    current_before = was_continuing ? current_after - 1 : 0
+    max_before = (max_after == current_after) ? current_before : max_after
+    games_won_before = stats["gamesWon"].to_i - 1
+  else
+    guesses["fail"] = [guesses["fail"].to_i - 1, 0].max
+
+    current_before = stats["terminatedStreak"].to_i
+    max_before = max_after
+    games_won_before = stats["gamesWon"].to_i
+  end
+
+  games_played_before = [stats["gamesPlayed"].to_i - 1, 0].max
+  games_won_before = [games_won_before, 0].max
+  guess_sum = (1..6).sum { |n| n * guesses[n.to_s].to_i }
+
+  stats["guesses"] = guesses
+  stats["currentStreak"] = [current_before, 0].max
+  stats["maxStreak"] = [max_before, 0].max
+  stats["terminatedStreak"] = nil
+  stats["gamesPlayed"] = games_played_before
+  stats["gamesWon"] = games_won_before
+  stats["winPercentage"] = games_played_before.positive? ? (games_won_before.to_f / games_played_before * 100).round : 0
+  stats["averageGuesses"] = games_won_before.positive? ? (guess_sum.to_f / games_won_before * 100).round / 100.0 : 0
+  stats
+end
+
+def blank_game_state
+  {
+    "puzzleNum" => nil,
+    "date" => nil,
+    "rowIndex" => nil,
+    "boardState" => nil,
+    "evaluations" => nil,
+    "gameStatus" => nil,
+    "hardMode" => false,
+    "insaneMode" => false,
+    "goofProtectionMode" => true,
+    "completedInHardMode" => false,
+    "completedInInsaneMode" => false,
+    "solution" => nil,
+    "lastPlayedTs" => nil,
+    "lastCompletedTs" => nil,
+    "updatedAt" => nil,
+    "restoringFromLocalStorage" => nil,
+    "answersRemaining" => nil,
+    "encryptedAnswer" => nil
+  }
+end
+
+# Rebuilds gameState as a completed game for yesterday_entry, reusing
+# whatever we can reconstruct (starter guess, final guess/answer) and
+# leaving unknown middle guesses blank -- cosmetic only, since a puzzleNum
+# that no longer matches "today" makes the client discard boardState and
+# start a fresh board on next load anyway (see wordle.js's storedPuzzleMismatch).
+def game_state_for_yesterday(yesterday_entry, current_game_state)
+  result = yesterday_entry["result"]
+  is_win = win?(result)
+  row_index = is_win ? result.to_i : 6
+  answer = yesterday_entry["answer"]&.downcase
+  starter = yesterday_entry["starter"]&.downcase
+  mode = yesterday_entry["mode"]
+  completed_at = yesterday_entry["completed_at"]
+  updated_at = yesterday_entry["updated_at"] || completed_at
+
+  board = Array.new(6, "")
+  evaluations = Array.new(6)
+
+  if starter && !starter.empty?
+    board[0] = starter
+    evaluations[0] = answer ? LeftWordle::Game.evaluate(starter, answer) : nil
+  end
+
+  if is_win && answer
+    board[row_index - 1] = answer
+    evaluations[row_index - 1] = Array.new(answer.length, LeftWordle::Game::CORRECT)
+  end
+
+  {
+    "puzzleNum" => yesterday_entry["puzzle_num"],
+    "date" => yesterday_entry["date"],
+    "rowIndex" => row_index,
+    "boardState" => board,
+    "evaluations" => evaluations,
+    "gameStatus" => is_win ? "WIN" : "FAIL",
+    "hardMode" => current_game_state["hardMode"] || false,
+    "insaneMode" => current_game_state["insaneMode"] || false,
+    "goofProtectionMode" => current_game_state.key?("goofProtectionMode") ? current_game_state["goofProtectionMode"] : true,
+    "completedInHardMode" => mode == "hard",
+    "completedInInsaneMode" => mode == "insane",
+    "solution" => answer,
+    "lastPlayedTs" => completed_at,
+    "lastCompletedTs" => completed_at,
+    "updatedAt" => updated_at,
+    "restoringFromLocalStorage" => nil,
+    "answersRemaining" => nil,
+    "encryptedAnswer" => answer ? encrypt_answer(answer) : nil
+  }
+end
+
+def default_output_path(input_path)
+  dir = File.dirname(input_path)
+  base = File.basename(input_path, ".json")
+  File.join(dir, "#{base}_rewound.json")
+end
+
+if ARGV.empty? || %w[-h --help].include?(ARGV.first)
+  warn "Usage: #{File.basename($PROGRAM_NAME)} INPUT_SETTINGS_FILE [OUTPUT_FILE]"
+  warn "Deletes the current day's game from a Left Wordle settings export as though it had never been played."
+  exit(ARGV.empty? ? 1 : 0)
+end
+
+input_path = ARGV[0]
+output_path = ARGV[1] || default_output_path(input_path)
+
+abort "No such file: #{input_path}" unless File.exist?(input_path)
+
+data = JSON.parse(File.read(input_path))
+abort "Expected a JSON object at #{input_path}" unless data.is_a?(Hash)
+
+game_state = data["gameState"].is_a?(Hash) ? data["gameState"] : {}
+history = data["history"].is_a?(Hash) ? data["history"] : {}
+
+today_num = game_state["puzzleNum"]
+today_date_str = game_state["date"]
+
+if today_num.nil?
+  latest = history.values.compact.select { |e| e["puzzle_num"].is_a?(Numeric) }.max_by { |e| e["puzzle_num"] }
+  abort "Could not determine today's puzzle -- gameState has no puzzleNum and history is empty." unless latest
+  today_num = latest["puzzle_num"]
+  today_date_str = latest["date"]
+end
+today_num = today_num.to_i
+yesterday_num = today_num - 1
+
+removed_today = history.delete(today_num.to_s)
+yesterday_entry = history[yesterday_num.to_s]
+
+data["gameState"] = yesterday_entry ? game_state_for_yesterday(yesterday_entry, game_state) : blank_game_state
+data["history"] = history
+data.delete("settingsBackup")
+
+if removed_today && data["statistics"].is_a?(Hash)
+  data["statistics"] = undo_statistics(data["statistics"], removed_today, yesterday_entry)
+end
+
+File.write(output_path, JSON.pretty_generate(data))
+
+puts "Wrote #{output_path}"
+puts(removed_today ? "Removed today's game (puzzle ##{today_num}, #{today_date_str}) from history and statistics." : "No history entry for puzzle ##{today_num} -- nothing to remove there (still in progress); gameState was still rewound.")
+puts(yesterday_entry ? "gameState now reflects puzzle ##{yesterday_num} (#{yesterday_entry["date"]})." : "No history entry for puzzle ##{yesterday_num} -- gameState reset to a blank pre-game state instead.")
