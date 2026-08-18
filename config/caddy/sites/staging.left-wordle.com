@@ -5,12 +5,6 @@ staging.left-wordle.com {
 
 	import api-rate-limits unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
 
-	# logins_and_passkeys.html was renamed to logins-and-passkeys.html --
-	# permanent redirect for the old URL (with or without extension) so
-	# existing links/bookmarks/search results aren't broken.
-	redir /logins_and_passkeys.html /logins-and-passkeys.html permanent
-	redir /logins_and_passkeys /logins-and-passkeys.html permanent
-
 	handle {
 		root * /home/deploy/staging.left-wordle.com/current
 		try_files {path} {path}.html {path}/index.html
