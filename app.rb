@@ -798,7 +798,8 @@ class LeftWordleApi < Sinatra::Base
         external_id: credential.id,
         public_key: credential.public_key,
         sign_count: credential.sign_count || 0,
-        nickname: payload["nickname"]
+        nickname: payload["nickname"],
+        last_used_at: Sequel::CURRENT_TIMESTAMP
       )
 
       issue_session_cookie!(user, extract_client_device_id)
