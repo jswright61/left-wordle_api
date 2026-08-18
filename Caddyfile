@@ -1,7 +1,10 @@
 # Caddy configuration lives in config/caddy/.
 #
-#   config/caddy/Caddyfile               — global config (deploy to /etc/caddy/Caddyfile)
-#   config/caddy/sites/staging.left-wordle.com  — staging site include
+#   config/caddy/Caddyfile                          — global config (deploy to /etc/caddy/Caddyfile)
+#   config/caddy/sites/staging.left-wordle.com      — staging site include
+#   config/caddy/sites/production.left-wordle.com   — production site include
 #
-# Production site include is managed directly on paula-poundstone in
-# /etc/caddy/sites-enabled/ and mirrors the staging file with production paths.
+# Both site includes are tracked here for reference, but neither is deployed
+# automatically by Capistrano -- Caddy config changes on paula-poundstone are
+# applied by hand (validate, then reload/restart). Keep these files in sync
+# with whatever's actually live after making a manual change.
