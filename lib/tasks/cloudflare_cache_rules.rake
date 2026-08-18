@@ -68,7 +68,7 @@ module CloudflareCacheRulesTask
         environment,
         "cache_html",
         "Left Wordle - Cache HTML At Edge (#{environment})",
-        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and (http.request.uri.path eq \"/\" or http.request.uri.path.extension eq \"html\" or http.request.uri.path in {\"/privacy\" \"/release-notes\" \"/logins_and_passkeys\" \"/things-to-test\" \"/retire-words\" \"/seed-legacy\"}))",
+        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and (http.request.uri.path eq \"/\" or http.request.uri.path.extension eq \"html\" or http.request.uri.path in {\"/privacy\" \"/release-notes\" \"/logins-and-passkeys\" \"/things-to-test\" \"/retire-words\" \"/seed-legacy\"}))",
         cacheable_action_parameters
       ),
       rule(

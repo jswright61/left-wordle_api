@@ -5,6 +5,12 @@ staging.left-wordle.com {
 
 	import api-rate-limits unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
 
+	# logins_and_passkeys.html was renamed to logins-and-passkeys.html --
+	# permanent redirect for the old URL (with or without extension) so
+	# existing links/bookmarks/search results aren't broken.
+	redir /logins_and_passkeys.html /logins-and-passkeys.html permanent
+	redir /logins_and_passkeys /logins-and-passkeys.html permanent
+
 	handle {
 		root * /home/deploy/staging.left-wordle.com/current
 		try_files {path} {path}.html {path}/index.html
@@ -12,7 +18,7 @@ staging.left-wordle.com {
 		# Mutable app files rely on browser revalidation plus Cloudflare purge
 		# at deploy time. s-maxage lets Cloudflare keep the edge hot without
 		# asking browsers to keep stale copies after a release.
-		@html path / *.html /privacy /release-notes /logins_and_passkeys /things-to-test /retire-words /seed-legacy
+		@html path / *.html /privacy /release-notes /logins-and-passkeys /things-to-test /retire-words /seed-legacy
 		header @html Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
 
 		@releaseMarkers path /app_version.js /version.json
