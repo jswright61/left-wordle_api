@@ -6,6 +6,10 @@ staging.left-wordle.com {
 	import api-rate-limits unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
 	import strip-html-extension
 
+	handle /guesser* {
+		reverse_proxy unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
+	}
+
 	handle {
 		root * /home/deploy/staging.left-wordle.com/current
 		try_files {path} {path}.html {path}/index.html
