@@ -4,6 +4,7 @@ staging.left-wordle.com {
 	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
 
 	import api-rate-limits unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
+	import strip-html-extension
 
 	handle {
 		root * /home/deploy/staging.left-wordle.com/current

@@ -30,6 +30,18 @@
 	}
 }
 
+# Canonical URLs are extensionless (the files on disk keep .html -- see
+# try_files in each site block). A request for the .html form -- an old
+# link, a typed URL, a crawler -- gets permanently redirected to the
+# extensionless URL rather than served directly, so there's only ever
+# one indexable/bookmarkable URL per page.
+(strip-html-extension) {
+	@dotHtml {
+		path_regexp stripHtml ^(.+)\.html$
+	}
+	redir @dotHtml {re.stripHtml.1} permanent
+}
+
 (block_bots) {
 	@disallowed_bots {
 		# 1. Block known bad/AI/search actors
