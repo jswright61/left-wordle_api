@@ -92,5 +92,3 @@ namespace :deploy do
     abort "Cloudflare purge failed: invalid API response"
   end
 end
-
-after "puma:restart", "deploy:purge_cloudflare_cache"

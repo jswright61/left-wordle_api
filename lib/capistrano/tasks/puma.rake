@@ -47,3 +47,4 @@ end
 
 after "deploy:published", "puma:setup"
 after "deploy:published", "puma:restart"
+after "puma:restart", "deploy:purge_cloudflare_cache"
