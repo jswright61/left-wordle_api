@@ -32,6 +32,12 @@ class LeftWordleApi < Sinatra::Base
   # what a client actually pushes today) rather than accepting an arbitrary
   # string, since this becomes a permanent audit-trail label.
   CLIENT_SNAPSHOT_EVENTS = ["new user creation"].freeze
+  # Which flow produced a stats_adjustments row -- "manual" is Tools >
+  # Adjust Stats; "signup_reconciliation" is the automatic carry-over-local-
+  # totals push in pushLocalDataToNewAccount when history import can't
+  # chain everything contiguously. Narrow on purpose, same reasoning as
+  # CLIENT_SNAPSHOT_EVENTS above: it becomes a permanent audit-trail label.
+  STATS_ADJUSTMENT_SOURCES = %w[manual signup_reconciliation].freeze
   CLIENT_DEVICE_ID_PATTERN = /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
   RATE_LIMIT_WINDOW_SECONDS = 60
   RATE_LIMIT_MAX_REQUESTS = 20
@@ -1072,12 +1078,29 @@ class LeftWordleApi < Sinatra::Base
     def stats_adjust_response
       user = require_authenticated_user!
       require_csrf!
-      payload = request_payload
+      request = request_payload
+
+      payload = request["statistics"]
+      halt_json(:bad_request, "statistics must be an object") unless payload.is_a?(Hash)
+
+      source = request["source"].to_s
+      unless STATS_ADJUSTMENT_SOURCES.include?(source)
+        halt_json(:bad_request, "source must be one of: #{STATS_ADJUSTMENT_SOURCES.join(", ")}")
+      end
+
       profile = find_or_create_profile(user)
       before_stats = profile.statistics || {}
 
+      # currentStreakAnchorPuzzleNum is pure server bookkeeping for
+      # apply_played_game_to_statistics!'s gap check -- the client has no
+      # concept of it and never sends one. Force it through from whatever
+      # we already had rather than letting a client-submitted blob (which
+      # necessarily omits it) silently clear it, which would let the very
+      # next played game apply as if this were a brand new profile.
+      payload["currentStreakAnchorPuzzleNum"] = before_stats["currentStreakAnchorPuzzleNum"]
+
       DB.transaction do
-        StatsAdjustment.create(user_id: user.id, before: Sequel.pg_json(before_stats), after: Sequel.pg_json(payload))
+        StatsAdjustment.create(user_id: user.id, before: Sequel.pg_json(before_stats), after: Sequel.pg_json(payload), source: source)
         profile.update(statistics: Sequel.pg_json(payload))
       end
 
@@ -1120,15 +1143,28 @@ class LeftWordleApi < Sinatra::Base
 
       imported = 0
       skipped = 0
+      stats_applied = 0
+      stats_skip_reasons = Hash.new(0)
+
       entries.each do |entry|
-        if import_history_row!(user, entry)
+        result = import_history_row!(user, entry)
+        if result[:row] == :imported
           imported += 1
         else
           skipped += 1
         end
+
+        if result[:stats] == :applied
+          stats_applied += 1
+        elsif result[:stats]
+          stats_skip_reasons[result[:stats].to_s] += 1
+        end
       end
 
-      json_response({imported: imported, skipped: skipped})
+      json_response({
+        imported: imported, skipped: skipped,
+        stats_applied: stats_applied, stats_skip_reasons: stats_skip_reasons
+      })
     end
 
     # entry shape (agreed client<->API contract): {puzzle_num, date, mode,
@@ -1140,19 +1176,22 @@ class LeftWordleApi < Sinatra::Base
     # Always attempts the (client_device_id, date)-scoped upsert, even if the
     # user already has a row for this puzzle_num from a different device --
     # every device's data is preserved (see migration_rethink.md's
-    # preserve-information principle). "skipped" here means no new row was
-    # created for this device+date, not "this puzzle was already known" --
-    # whether the row counts toward stats is decided separately by
-    # apply_played_game_to_statistics!, based on server-arrival canonicality.
+    # preserve-information principle). row: :skipped here means no new row
+    # was created for this device+date, not "this puzzle was already known"
+    # -- whether the row counts toward stats is a separate question,
+    # reported in stats: (nil when there's no completion to apply, :applied
+    # when it moved the numbers, or apply_played_game_to_statistics!'s
+    # no-op reason otherwise) so a sync response can explain itself instead
+    # of requiring a database lookup to find out what happened.
     def import_history_row!(user, entry)
-      return false unless entry.is_a?(Hash)
+      return {row: :skipped, stats: nil} unless entry.is_a?(Hash)
 
       date = safe_date(entry["date"])
       puzzle_num = Integer(entry["puzzle_num"], exception: false)
-      return false unless date && puzzle_num
+      return {row: :skipped, stats: nil} unless date && puzzle_num
 
       client_device_id = valid_uuid?(entry["device_id"]) ? entry["device_id"] : extract_client_device_id
-      return false unless client_device_id
+      return {row: :skipped, stats: nil} unless client_device_id
 
       mode = entry.fetch("mode", "regular").to_s
       mode = "regular" unless %w[regular hard insane].include?(mode)
@@ -1179,10 +1218,10 @@ class LeftWordleApi < Sinatra::Base
         completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
       )
 
-      apply_played_game_to_statistics!(user, puzzle_num, game_status) if game_status
-      is_new_row
+      stats = game_status ? apply_played_game_to_statistics!(user, puzzle_num, game_status) : nil
+      {row: (is_new_row ? :imported : :skipped), stats: stats}
     rescue Sequel::DatabaseError
-      false
+      {row: :skipped, stats: nil}
     end
 
     # -- Stats/streak derivation (server-authoritative, event-driven) --------
@@ -1197,28 +1236,38 @@ class LeftWordleApi < Sinatra::Base
     # currentStreakAnchorPuzzleNum tracks the last puzzle_num already
     # reflected in the numbers. A row only moves the numbers if it's the
     # canonical (earliest server-arrival) row for its puzzle_num AND its
-    # puzzle_num is exactly anchor + 1. Anything else -- a losing duplicate,
-    # or a row landing behind the anchor (older backfill, out-of-order
-    # arrival) -- is archival only: it's preserved in played_games/history
-    # but never changes stats, regardless of the order events arrive in.
+    # puzzle_num is greater than the anchor. Anything at or behind the
+    # anchor -- a losing duplicate, or a row landing behind it (older
+    # backfill, out-of-order arrival) -- is archival only: it's preserved
+    # in played_games/history but never changes stats, regardless of the
+    # order events arrive in. A puzzle_num ahead of the anchor always
+    # moves the numbers, but next_statistics_for only *continues* the
+    # streak when it's exactly anchor + 1 -- anything further ahead is a
+    # genuine gap and breaks it instead of leaving stats frozen forever.
     def canonical_played_game_for(user, puzzle_num)
       PlayedGame.where(user_id: user.id, puzzle_num: puzzle_num).order(:created_at, :id).first
     end
 
+    # Returns why this event did or didn't move the numbers -- :applied,
+    # :non_canonical (a losing duplicate, or this row's status lost to an
+    # earlier-arriving one for the same puzzle_num), or :archival (at or
+    # behind the anchor already) -- so callers can report it instead of
+    # requiring a database lookup to reconstruct what happened.
     def apply_played_game_to_statistics!(user, puzzle_num, game_status)
-      return unless user && %w[WIN FAIL].include?(game_status)
+      return :invalid unless user && %w[WIN FAIL].include?(game_status)
 
       DB.transaction do
         profile = UserProfile.where(user_id: user.id).for_update.first || find_or_create_profile(user)
 
         canonical = canonical_played_game_for(user, puzzle_num)
-        next unless canonical && canonical.game_status == game_status
+        next :non_canonical unless canonical && canonical.game_status == game_status
 
         stats = profile.statistics || {}
         anchor = stats["currentStreakAnchorPuzzleNum"]
-        next unless anchor.nil? || puzzle_num == anchor + 1
+        next :archival unless anchor.nil? || puzzle_num > anchor
 
         profile.update(statistics: Sequel.pg_json(next_statistics_for(stats, canonical, game_status, puzzle_num)))
+        :applied
       end
     end
 
@@ -1229,8 +1278,11 @@ class LeftWordleApi < Sinatra::Base
       updated["gamesWon"] = stats["gamesWon"] || 0
       updated["maxStreak"] = stats["maxStreak"] || 0
 
+      anchor = stats["currentStreakAnchorPuzzleNum"]
+      is_continuation = anchor && puzzle_num == anchor + 1
+
       if game_status == "WIN"
-        updated["currentStreak"] = (stats["currentStreak"] || 0) + 1
+        updated["currentStreak"] = is_continuation ? (stats["currentStreak"] || 0) + 1 : 1
         updated["maxStreak"] = [updated["maxStreak"], updated["currentStreak"]].max
         updated["gamesWon"] += 1
 

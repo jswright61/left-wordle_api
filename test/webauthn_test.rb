@@ -374,8 +374,7 @@ class WebauthnTest < Minitest::Test
     # a create, not an update.
     UserProfile.create(user_id: body["user_id"], statistics: Sequel.pg_json({currentStreak: 2}))
 
-    post_json "/api/v2/stats/adjust", {currentStreak: 9}, csrf_env(body["csrf_token"])
-    assert last_response.ok?
+    adjust_stats!({currentStreak: 9}, "manual", body["csrf_token"])
     assert_equal 9, json_response["statistics"]["currentStreak"]
 
     user = User[body["user_id"]]
@@ -383,6 +382,80 @@ class WebauthnTest < Minitest::Test
     refute_nil snapshot
     assert_equal 2, snapshot.before["currentStreak"]
     assert_equal 9, snapshot.after["currentStreak"]
+    assert_equal "manual", snapshot.source
+  end
+
+  def test_stats_adjust_records_the_signup_reconciliation_source
+    body = register_new_device!
+    adjust_stats!({currentStreak: 12}, "signup_reconciliation", body["csrf_token"])
+
+    snapshot = StatsAdjustment.where(user_id: body["user_id"]).order(:created_at).last
+    assert_equal "signup_reconciliation", snapshot.source
+  end
+
+  def test_stats_adjust_rejects_an_unrecognized_source
+    body = register_new_device!
+    post_json "/api/v2/stats/adjust", {statistics: {currentStreak: 9}, source: "made_up"}, csrf_env(body["csrf_token"])
+    assert_equal 400, last_response.status
+  end
+
+  def test_stats_adjust_rejects_a_missing_statistics_object
+    body = register_new_device!
+    post_json "/api/v2/stats/adjust", {source: "manual"}, csrf_env(body["csrf_token"])
+    assert_equal 400, last_response.status
+  end
+
+  def test_stats_adjust_preserves_the_existing_streak_anchor
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_id = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+    assert_equal 500, get_profile!["statistics"]["currentStreakAnchorPuzzleNum"]
+
+    # The client has no concept of the anchor and never sends one -- this
+    # mirrors the real payload shape from Adjust Stats / the post-signup
+    # "carry over local totals" reconciliation, neither of which includes it.
+    adjust_stats!({currentStreak: 50, maxStreak: 50, gamesPlayed: 50, gamesWon: 50}, "manual", csrf)
+
+    stats = get_profile!["statistics"]
+    assert_equal 50, stats["currentStreak"], "the adjusted totals must land exactly as sent -- no surprise numbers"
+    assert_equal 500, stats["currentStreakAnchorPuzzleNum"], "the anchor must survive an adjustment that never mentions it"
+  end
+
+  def test_play_immediately_after_an_adjustment_still_continues_the_adjusted_streak
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_id = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+
+    adjust_stats!({currentStreak: 50, maxStreak: 50, gamesPlayed: 50, gamesWon: 50}, "manual", csrf)
+
+    # Puzzle 501 is exactly anchor + 1 -- a real continuation, not a gap.
+    import_history!([{puzzle_num: 501, date: "2026-01-02", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+
+    stats = get_profile!["statistics"]
+    assert_equal 51, stats["currentStreak"], "consecutive play must build on the adjusted total, not reset it"
+    assert_equal 51, stats["maxStreak"]
+  end
+
+  def test_gap_after_an_adjustment_resets_the_streak_instead_of_jumping_it
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_id = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+
+    adjust_stats!({currentStreak: 50, maxStreak: 50, gamesPlayed: 50, gamesWon: 50}, "manual", csrf)
+
+    # Puzzle 550 is nowhere near anchor + 1 -- without the anchor surviving
+    # the adjustment, this would apply unconditionally (nil anchor accepts
+    # any puzzle_num) and blindly increment the adjusted 50 to 51, exactly
+    # the bug that prompted this fix.
+    import_history!([{puzzle_num: 550, date: "2026-02-19", game_status: "WIN", guesses: n_guesses(4), device_id: device_id}], csrf)
+
+    stats = get_profile!["statistics"]
+    assert_equal 1, stats["currentStreak"], "a real gap must reset the streak, not extend the adjusted total"
+    assert_equal 50, stats["maxStreak"], "maxStreak must not rise just because a gapped game was played"
+    assert_equal 550, stats["currentStreakAnchorPuzzleNum"]
   end
 
   # -- Stats/streak derivation from played_games events -----------------------
@@ -405,20 +478,61 @@ class WebauthnTest < Minitest::Test
     assert_equal 1, stats["guesses"]["4"]
   end
 
-  def test_history_import_gap_is_archival_only_and_does_not_move_stats
+  def test_history_import_gap_resets_current_streak_but_still_counts
     body = register_new_device!
     csrf = body["csrf_token"]
     device_id = SecureRandom.uuid
     import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
-    # Puzzle 501 never arrives -- 502 lands with a gap behind it.
+    # Puzzle 501 never arrives -- 502 lands with a gap behind it. A gap must
+    # not leave stats frozen forever (nothing else ever advances the anchor
+    # once it's set) -- it should count and reset the streak instead.
     import_history!([{puzzle_num: 502, date: "2026-01-03", game_status: "WIN", guesses: n_guesses(2), device_id: device_id}], csrf)
 
     stats = get_profile!["statistics"]
-    assert_equal 1, stats["gamesPlayed"], "the gapped puzzle must not count toward stats"
-    assert_equal 500, stats["currentStreakAnchorPuzzleNum"]
+    assert_equal 2, stats["gamesPlayed"], "the gapped puzzle must still count toward stats"
+    assert_equal 1, stats["currentStreak"], "a gap breaks the streak instead of continuing it"
+    assert_equal 1, stats["maxStreak"]
+    assert_equal 502, stats["currentStreakAnchorPuzzleNum"], "the anchor must advance so future plays aren't compared against a stale gap forever"
 
     history = json_get("/api/v2/history")
     assert history.key?("502"), "the gapped game must still be preserved in history"
+  end
+
+  def test_history_import_at_or_behind_anchor_is_archival_only_and_does_not_move_stats
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_id = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+    # A duplicate of the anchor's own puzzle, and an older backfill behind
+    # it, must never move stats or rewind the anchor.
+    import_history!([
+      {puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: SecureRandom.uuid},
+      {puzzle_num: 499, date: "2025-12-31", game_status: "WIN", guesses: n_guesses(2), device_id: device_id}
+    ], csrf)
+
+    stats = get_profile!["statistics"]
+    assert_equal 1, stats["gamesPlayed"]
+    assert_equal 500, stats["currentStreakAnchorPuzzleNum"]
+
+    history = json_get("/api/v2/history")
+    assert history.key?("499"), "the archival-only game must still be preserved in history"
+  end
+
+  def test_history_import_response_reports_why_each_entry_did_or_did_not_move_stats
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_a = SecureRandom.uuid
+    device_b = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_a}], csrf)
+
+    result = import_history!([
+      {puzzle_num: 501, date: "2026-01-02", game_status: "WIN", guesses: n_guesses(3), device_id: device_a}, # applied
+      {puzzle_num: 499, date: "2025-12-31", game_status: "WIN", guesses: n_guesses(2), device_id: device_a}, # archival: behind the anchor
+      {puzzle_num: 501, date: "2026-01-02", game_status: "FAIL", guesses: n_guesses(6), device_id: device_b} # non_canonical: loses to device_a's earlier-arriving WIN
+    ], csrf)
+
+    assert_equal 1, result["stats_applied"]
+    assert_equal({"archival" => 1, "non_canonical" => 1}, result["stats_skip_reasons"])
   end
 
   def test_fail_at_anchor_plus_one_resets_current_streak_but_keeps_max_streak
@@ -463,6 +577,12 @@ class WebauthnTest < Minitest::Test
 
   def import_history!(entries, csrf_token)
     post_json "/api/v2/history/import", {history: entries}, csrf_env(csrf_token)
+    assert last_response.ok?, last_response.body
+    json_response
+  end
+
+  def adjust_stats!(statistics, source, csrf_token)
+    post_json "/api/v2/stats/adjust", {statistics: statistics, source: source}, csrf_env(csrf_token)
     assert last_response.ok?, last_response.body
     json_response
   end
