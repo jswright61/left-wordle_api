@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+remotes_pushed_to=()
+
+report_remotes_and_tags() {
+  local exit_code=$?
+  if [[ ${#remotes_pushed_to[@]} -eq 0 ]]; then
+    echo "Not pushed to any remotes"
+  else
+    echo "Pushed to remotes:"
+    printf '%s\n' "${remotes_pushed_to[@]}"
+  fi
+  bin/check-remote-tags.sh || true
+  exit "$exit_code"
+}
+trap report_remotes_and_tags EXIT
+
 ENV=${1:-}
 if [[ -z "$ENV" ]]; then
   echo "Usage: bin/deploy <staging|production> [vX.Y.Z[-suffix] | --branch BRANCH]" >&2
@@ -85,20 +100,34 @@ if ! bundle exec rake test; then
   exit 1
 fi
 
+mirror_remotes=()
+while IFS= read -r remote; do
+  [[ "$remote" == "paula-poundstone" ]] && continue
+  mirror_remotes+=("$remote")
+done < <(git remote)
+
 if [[ -n "$TAG" ]]; then
   echo "→ Pushing $VERSION to paula-poundstone..."
   git push paula-poundstone "$VERSION"
+  remotes_pushed_to+=("paula-poundstone")
 
-  echo "→ Pushing $VERSION to origin (background)..."
-  git push origin "$VERSION" &>/dev/null &
-  disown $!
+  for remote in "${mirror_remotes[@]}"; do
+    echo "→ Pushing $VERSION to $remote (background)..."
+    git push "$remote" "$VERSION" &>/dev/null &
+    disown $!
+    remotes_pushed_to+=("$remote")
+  done
 else
   echo "→ Pushing $BRANCH + tags to paula-poundstone..."
   git push paula-poundstone "$BRANCH" --tags
+  remotes_pushed_to+=("paula-poundstone")
 
-  echo "→ Pushing $BRANCH + tags to origin (background)..."
-  git push origin "$BRANCH" --tags &>/dev/null &
-  disown $!
+  for remote in "${mirror_remotes[@]}"; do
+    echo "→ Pushing $BRANCH + tags to $remote (background)..."
+    git push "$remote" "$BRANCH" --tags &>/dev/null &
+    disown $!
+    remotes_pushed_to+=("$remote")
+  done
 fi
 
 if [[ -n "$TAG" ]]; then
