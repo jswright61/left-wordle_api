@@ -8,7 +8,7 @@ require_relative "../lib/models/scheduled_task"
 class SchedulerTest < Minitest::Test
   DUMMY_TASK_NAME = "scheduler_test:dummy_task"
 
-  REAL_TASK_NAMES = %w[stats:daily_summary storage_snapshots:prune].freeze
+  REAL_TASK_NAMES = %w[stats:daily_summary storage_snapshots:prune stats_adjustments:prune].freeze
 
   def setup
     ScheduledTask.where(name: DUMMY_TASK_NAME).delete
@@ -155,6 +155,20 @@ class SchedulerTest < Minitest::Test
     assert_equal Sequel::SQLTime.parse("04:00:00"), task.run_at
   ensure
     restore_scheduled_task_row("storage_snapshots:prune", original)
+  end
+
+  def test_seed_creates_the_stats_adjustments_prune_row
+    original = ScheduledTask.first(name: "stats_adjustments:prune")
+    ScheduledTask.where(name: "stats_adjustments:prune").delete
+
+    Rake::Task["scheduler:seed"].invoke
+
+    task = ScheduledTask.first(name: "stats_adjustments:prune")
+    refute_nil task
+    assert_equal true, task.enabled
+    assert_equal Sequel::SQLTime.parse("04:15:00"), task.run_at
+  ensure
+    restore_scheduled_task_row("stats_adjustments:prune", original)
   end
 
   private

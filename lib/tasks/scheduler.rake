@@ -17,6 +17,12 @@ namespace :scheduler do
       t.enabled = true
     end
     puts "Ensured scheduled_tasks row for 'storage_snapshots:prune'"
+
+    ScheduledTask.find_or_create(name: "stats_adjustments:prune") do |t|
+      t.run_at = "04:15:00"
+      t.enabled = true
+    end
+    puts "Ensured scheduled_tasks row for 'stats_adjustments:prune'"
   end
 
   desc "Run any scheduled tasks that are due (invoked periodically by a systemd timer)"
