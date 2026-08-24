@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../release_tag_resolver"
+
 # Capistrano's deploy:cleanup hardcodes a /^\d{14}$/ regex inline (it does not
 # go through an overridable valid_release_path? method), so it never recognizes
 # the readable release names set by deploy:set_readable_release_path. Redefine
@@ -77,13 +79,7 @@ namespace :deploy do
       commit_sha = sha_line.split.first
 
       tags_output = `git ls-remote --tags #{repo}`
-      version_tag = tags_output.lines.find do |line|
-        tag_sha, ref = line.split
-        tag = ref.to_s.delete_prefix("refs/tags/").chomp("^{}")
-        tag_sha == commit_sha && tag.match?(/\Av\d+\.\d+\.\d+\z/)
-      end&.then do |line|
-        line.split.last.delete_prefix("refs/tags/").chomp("^{}")
-      end
+      version_tag = ReleaseTagResolver.highest_tag_for_commit(tags_output, commit_sha)
 
       if version_tag
         puts "  Release tag verified: #{version_tag} (#{commit_sha[0, 8]})"
