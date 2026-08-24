@@ -35,9 +35,15 @@ class LeftWordleApi < Sinatra::Base
   # Which flow produced a stats_adjustments row -- "manual" is Tools >
   # Adjust Stats; "signup_reconciliation" is the automatic carry-over-local-
   # totals push in pushLocalDataToNewAccount when history import can't
-  # chain everything contiguously. Narrow on purpose, same reasoning as
+  # chain everything contiguously; "game_completion" is a live play or
+  # history-import event that actually moved the numbers (see
+  # apply_played_game_to_statistics!). Narrow on purpose, same reasoning as
   # CLIENT_SNAPSHOT_EVENTS above: it becomes a permanent audit-trail label.
-  STATS_ADJUSTMENT_SOURCES = %w[manual signup_reconciliation].freeze
+  STATS_ADJUSTMENT_SOURCES = %w[manual signup_reconciliation game_completion].freeze
+  # "game_completion" is recorded internally by apply_played_game_to_statistics!
+  # only -- excluded here so a client can't post it through stats/adjust and
+  # masquerade a manual edit as a real completion in the audit trail.
+  CLIENT_STATS_ADJUSTMENT_SOURCES = (STATS_ADJUSTMENT_SOURCES - ["game_completion"]).freeze
   CLIENT_DEVICE_ID_PATTERN = /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
   RATE_LIMIT_WINDOW_SECONDS = 60
   RATE_LIMIT_MAX_REQUESTS = 20
@@ -1084,8 +1090,8 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "statistics must be an object") unless payload.is_a?(Hash)
 
       source = request["source"].to_s
-      unless STATS_ADJUSTMENT_SOURCES.include?(source)
-        halt_json(:bad_request, "source must be one of: #{STATS_ADJUSTMENT_SOURCES.join(", ")}")
+      unless CLIENT_STATS_ADJUSTMENT_SOURCES.include?(source)
+        halt_json(:bad_request, "source must be one of: #{CLIENT_STATS_ADJUSTMENT_SOURCES.join(", ")}")
       end
 
       profile = find_or_create_profile(user)
@@ -1099,8 +1105,10 @@ class LeftWordleApi < Sinatra::Base
       # next played game apply as if this were a brand new profile.
       payload["currentStreakAnchorPuzzleNum"] = before_stats["currentStreakAnchorPuzzleNum"]
 
+      event_desc = (source == "manual") ? "Manual adjustment via Tools > Adjust Stats" : "Post-signup local-totals reconciliation"
+
       DB.transaction do
-        StatsAdjustment.create(user_id: user.id, before: Sequel.pg_json(before_stats), after: Sequel.pg_json(payload), source: source)
+        record_stats_event!(user, before_stats, payload, source, event_desc)
         profile.update(statistics: Sequel.pg_json(payload))
       end
 
@@ -1248,6 +1256,18 @@ class LeftWordleApi < Sinatra::Base
       PlayedGame.where(user_id: user.id, puzzle_num: puzzle_num).order(:created_at, :id).first
     end
 
+    # A short, bounded (see stats_adjustments:prune) audit trail of
+    # statistics changes -- source distinguishes manual/automatic
+    # adjustments from actual game completions, event_desc carries the
+    # specifics, so a support investigation doesn't require reconstructing
+    # what happened from raw played_games timestamps.
+    def record_stats_event!(user, before_stats, after_stats, source, event_desc)
+      StatsAdjustment.create(
+        user_id: user.id, before: Sequel.pg_json(before_stats), after: Sequel.pg_json(after_stats),
+        source: source, event_desc: event_desc
+      )
+    end
+
     # Returns why this event did or didn't move the numbers -- :applied,
     # :non_canonical (a losing duplicate, or this row's status lost to an
     # earlier-arriving one for the same puzzle_num), or :archival (at or
@@ -1266,7 +1286,9 @@ class LeftWordleApi < Sinatra::Base
         anchor = stats["currentStreakAnchorPuzzleNum"]
         next :archival unless anchor.nil? || puzzle_num > anchor
 
-        profile.update(statistics: Sequel.pg_json(next_statistics_for(stats, canonical, game_status, puzzle_num)))
+        after_stats = next_statistics_for(stats, canonical, game_status, puzzle_num)
+        profile.update(statistics: Sequel.pg_json(after_stats))
+        record_stats_event!(user, stats, after_stats, "game_completion", "Puzzle ##{puzzle_num} completed (#{game_status})")
         :applied
       end
     end

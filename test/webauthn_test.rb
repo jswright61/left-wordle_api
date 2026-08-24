@@ -383,6 +383,7 @@ class WebauthnTest < Minitest::Test
     assert_equal 2, snapshot.before["currentStreak"]
     assert_equal 9, snapshot.after["currentStreak"]
     assert_equal "manual", snapshot.source
+    assert_equal "Manual adjustment via Tools > Adjust Stats", snapshot.event_desc
   end
 
   def test_stats_adjust_records_the_signup_reconciliation_source
@@ -391,6 +392,7 @@ class WebauthnTest < Minitest::Test
 
     snapshot = StatsAdjustment.where(user_id: body["user_id"]).order(:created_at).last
     assert_equal "signup_reconciliation", snapshot.source
+    assert_equal "Post-signup local-totals reconciliation", snapshot.event_desc
   end
 
   def test_stats_adjust_rejects_an_unrecognized_source
@@ -403,6 +405,12 @@ class WebauthnTest < Minitest::Test
     body = register_new_device!
     post_json "/api/v2/stats/adjust", {source: "manual"}, csrf_env(body["csrf_token"])
     assert_equal 400, last_response.status
+  end
+
+  def test_stats_adjust_rejects_game_completion_as_a_client_supplied_source
+    body = register_new_device!
+    post_json "/api/v2/stats/adjust", {statistics: {currentStreak: 9}, source: "game_completion"}, csrf_env(body["csrf_token"])
+    assert_equal 400, last_response.status, "game_completion is recorded internally only, never by a client"
   end
 
   def test_stats_adjust_preserves_the_existing_streak_anchor
@@ -476,6 +484,34 @@ class WebauthnTest < Minitest::Test
     assert_equal 501, stats["currentStreakAnchorPuzzleNum"]
     assert_equal 1, stats["guesses"]["3"]
     assert_equal 1, stats["guesses"]["4"]
+  end
+
+  def test_history_import_records_a_game_completion_event_for_each_puzzle_that_moves_stats
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    import_history!([
+      {puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id},
+      {puzzle_num: 501, date: "2026-01-02", game_status: "FAIL", guesses: n_guesses(6), device_id: device_id}
+    ], body["csrf_token"])
+
+    events = StatsAdjustment.where(user_id: body["user_id"], source: "game_completion").order(:created_at).all
+    assert_equal 2, events.length
+    assert_equal "Puzzle #500 completed (WIN)", events[0].event_desc
+    assert_equal "Puzzle #501 completed (FAIL)", events[1].event_desc
+    assert_equal 1, events[0].after["gamesPlayed"]
+    assert_equal 2, events[1].after["gamesPlayed"]
+  end
+
+  def test_history_import_does_not_record_an_event_for_a_puzzle_that_did_not_move_stats
+    body = register_new_device!
+    csrf = body["csrf_token"]
+    device_id = SecureRandom.uuid
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], csrf)
+    # Behind the anchor -- archival only, no stats change.
+    import_history!([{puzzle_num: 499, date: "2025-12-31", game_status: "WIN", guesses: n_guesses(2), device_id: device_id}], csrf)
+
+    events = StatsAdjustment.where(user_id: body["user_id"], source: "game_completion").all
+    assert_equal 1, events.length, "only the puzzle that actually moved stats should be recorded"
   end
 
   def test_history_import_gap_resets_current_streak_but_still_counts
