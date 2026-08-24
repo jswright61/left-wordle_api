@@ -6,75 +6,38 @@ require "open3"
 require "uri"
 
 module CloudflarePurgeCredentials
-  ONE_PASSWORD_ITEM_UUID = "k46hfgro7uxkxtsivzqoohobzy"
-  PURGE_TOKEN_ENV_KEYS = ["CF_PURGE_CACHE_TOKEN", "CLOUDFLARE_API_TOKEN"].freeze
-  ZONE_ID_ENV_KEYS = ["CF_ZONE_ID", "CLOUDFLARE_ZONE_ID"].freeze
+  # Not a secret -- identifies which zone an API call applies to (visible in
+  # the Cloudflare dashboard URL) and grants no capability on its own. Only
+  # the API token below does.
+  ZONE_ID = "8111259d817302b1c2a208e940e407b2"
+  KEYCHAIN_SERVICE = "CF_PURGE_CACHE_TOKEN"
 
   module_function
 
-  def fetch
-    credentials = from_one_password
-    return credentials if credentials_complete?(credentials)
-
-    from_env
-  end
-
-  def field_value(item, label)
-    field = Array(item["fields"]).find { |candidate| candidate["label"] == label }
-    field && field["value"].to_s.strip
-  end
-
-  def from_env
-    {
-      api_token: first_env_value(PURGE_TOKEN_ENV_KEYS),
-      zone_id: first_env_value(ZONE_ID_ENV_KEYS)
-    }
-  end
-
-  def from_one_password
-    stdout, status = Open3.capture2e(
-      "op",
-      "item",
-      "get",
-      ONE_PASSWORD_ITEM_UUID,
-      "--format",
-      "json",
-      "--reveal"
+  # Add the token with:
+  #   security add-generic-password -a "$USER" -s "CF_PURGE_CACHE_TOKEN" -w 'YOUR_TOKEN_HERE'
+  def api_token
+    stdout, status = Open3.capture2(
+      "security", "find-generic-password",
+      "-a", ENV.fetch("USER", ""), "-s", KEYCHAIN_SERVICE, "-w"
     )
-    return {} unless status.success?
-
-    item = JSON.parse(stdout)
-    {
-      api_token: field_value(item, "CF_PURGE_CACHE_TOKEN"),
-      zone_id: field_value(item, "CF_ZONE_ID")
-    }
-  rescue Errno::ENOENT, JSON::ParserError
-    {}
-  end
-
-  def credentials_complete?(credentials)
-    credentials[:api_token].to_s.strip.length.positive? &&
-      credentials[:zone_id].to_s.strip.length.positive?
-  end
-
-  def first_env_value(keys)
-    keys.map { |key| ENV[key].to_s.strip }.find { |value| value.length.positive? }.to_s
+    status.success? ? stdout.strip : nil
   end
 end
 
 namespace :deploy do
   desc "Purge Cloudflare cache after a successful deploy"
   task :purge_cloudflare_cache do
-    credentials = CloudflarePurgeCredentials.fetch
-    api_token = credentials[:api_token].to_s.strip
-    zone_id = credentials[:zone_id].to_s.strip
-
-    if api_token.empty? || zone_id.empty?
-      puts "  Skipping Cloudflare purge: 1Password item missing and CF_ZONE_ID/CF_PURGE_CACHE_TOKEN not set"
-      next
+    api_token = CloudflarePurgeCredentials.api_token
+    if api_token.to_s.empty?
+      abort <<~MSG
+        Cloudflare purge failed: no "#{CloudflarePurgeCredentials::KEYCHAIN_SERVICE}" entry in Keychain.
+        Add it with:
+          security add-generic-password -a "$USER" -s "#{CloudflarePurgeCredentials::KEYCHAIN_SERVICE}" -w 'YOUR_TOKEN_HERE'
+      MSG
     end
 
-    uri = URI("https://api.cloudflare.com/client/v4/zones/#{zone_id}/purge_cache")
+    uri = URI("https://api.cloudflare.com/client/v4/zones/#{CloudflarePurgeCredentials::ZONE_ID}/purge_cache")
     request = Net::HTTP::Post.new(uri)
     request["Authorization"] = "Bearer #{api_token}"
     request["Content-Type"] = "application/json"
