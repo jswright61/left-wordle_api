@@ -84,6 +84,15 @@ else
   echo "Deploying $VERSION → $ENV"
 fi
 
+echo "→ Checking client is tagged $VERSION with release notes..."
+if ! bin/check-sibling-release "$VERSION" "$BRANCH"; then
+  echo "" >&2
+  echo "✗ client not ready for $VERSION — aborting deploy." >&2
+  echo "Tag client's $BRANCH and add release notes before deploying api:" >&2
+  echo "  cd ../client && git tag -a $VERSION -m 'Release $VERSION' && git push paula-poundstone $VERSION" >&2
+  exit 1
+fi
+
 echo "→ Running tests..."
 if ! bundle exec rake test; then
   echo "" >&2

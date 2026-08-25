@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Client and api are versioned in lockstep: releasing either repo under a
+# real tag (vX.Y.Z) requires the same tag to already exist in the other
+# repo, reachable from the branch being deployed, and -- since release
+# notes are player-facing and only live in the client -- a
+# release-notes.html section for it on the client's branch. Suffixed tags
+# (vX.Y.Z-branch-name) are throwaway staging test deploys, not releases.
+tag="${1:?Usage: bin/check-sibling-release <vX.Y.Z> <branch>}"
+branch="${2:?Usage: bin/check-sibling-release <vX.Y.Z> <branch>}"
+
+if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  exit 0
+fi
+
+api_dir="$(cd "$(dirname "$0")/.." && pwd)"
+client_dir="$api_dir/../client"
+
+if ! git -C "$client_dir" rev-parse --verify "refs/tags/$tag" &>/dev/null; then
+  echo "client has no tag '$tag'." >&2
+  exit 1
+fi
+
+if ! git -C "$client_dir" merge-base --is-ancestor "$tag" "$branch"; then
+  echo "client's tag '$tag' is not reachable from client's $branch." >&2
+  exit 1
+fi
+
+if ! (cd "$client_dir" && bin/check-release-notes "$tag" "$branch"); then
+  echo "client's release-notes.html on $branch has no entry for '$tag'." >&2
+  exit 1
+fi
