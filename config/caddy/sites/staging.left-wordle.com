@@ -23,12 +23,22 @@ staging.left-wordle.com {
 		@releaseMarkers path /app_version.js /version.json
 		header @releaseMarkers Cache-Control "no-cache"
 
-		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css
+		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css /404.css
 		header @clientCode Cache-Control "public, max-age=0, s-maxage=31536000, must-revalidate"
 
 		@staticAssets path *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.xml *.txt
 		header @staticAssets Cache-Control "public, max-age=86400, s-maxage=2592000"
 
+		file_server
+	}
+
+	# handle_errors runs its own middleware chain -- it doesn't inherit
+	# root or headers from the handle{} block above, so both are repeated
+	# here. Scoped to 404 only: a 500 shouldn't claim the page is missing.
+	handle_errors 404 {
+		root * /home/deploy/staging.left-wordle.com/current
+		rewrite * /404.html
+		header Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
 		file_server
 	}
 

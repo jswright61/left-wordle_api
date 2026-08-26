@@ -27,6 +27,16 @@ prod.left-wordle.com left-wordle.com {
 		header @html Cache-Control "no-cache"
 	}
 
+	# handle_errors runs its own middleware chain -- it doesn't inherit
+	# root or headers from the handle{} block above, so both are repeated
+	# here. Scoped to 404 only: a 500 shouldn't claim the page is missing.
+	handle_errors 404 {
+		root * /home/deploy/left-wordle.com/current
+		rewrite * /404.html
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	log {
 		output file /var/log/caddy/left-wordle.log
 	}
