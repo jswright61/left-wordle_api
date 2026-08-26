@@ -23,7 +23,7 @@ staging.left-wordle.com {
 		@releaseMarkers path /app_version.js /version.json
 		header @releaseMarkers Cache-Control "no-cache"
 
-		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css /404.css
+		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css /404.css /content-page.css /retire-words.css /seed-legacy.css
 		header @clientCode Cache-Control "public, max-age=0, s-maxage=31536000, must-revalidate"
 
 		@staticAssets path *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.xml *.txt
