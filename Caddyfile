@@ -1,10 +1,19 @@
 # Caddy configuration lives in config/caddy/.
 #
 #   config/caddy/Caddyfile                          — global config (deploy to /etc/caddy/Caddyfile)
+#   config/caddy/snippets/*.conf                     — reusable snippets, one per file
+#                                                       (deploy to /etc/caddy/snippets/, imported
+#                                                       by the global Caddyfile)
 #   config/caddy/sites/staging.left-wordle.com      — staging site include
 #   config/caddy/sites/production.left-wordle.com   — production site include
 #
-# Both site includes are tracked here for reference, but neither is deployed
-# automatically by Capistrano -- Caddy config changes on paula-poundstone are
-# applied by hand (validate, then reload/restart). Keep these files in sync
-# with whatever's actually live after making a manual change.
+# Site includes are synced automatically by `cap <stage> deploy` (see
+# lib/capistrano/tasks/caddy.rake and each stage's caddy_site_source /
+# caddy_site_live_path) -- config/caddy/sites is the source of truth for
+# those, no manual server-side patching needed.
+#
+# The global Caddyfile and its snippets are NOT auto-deployed -- they're
+# shared by every site on paula-poundstone (not just left-wordle), so
+# changes there are applied by hand deliberately (validate, then reload)
+# after checking what else runs on the box. Keep these two files in sync
+# with whatever's actually live after a manual change.

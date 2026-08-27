@@ -9,96 +9,11 @@
 	}
 }
 
-# ── Snippets ──────────────────────────────────────────────────────────────────
-(hide-dot-files) {
-	@hiddenFiles {
-		path_regexp (^|/)\..+
-		not path /.well-known/*
-	}
-	handle @hiddenFiles {
-		error "Access Denied" 403
-	}
-}
+# Each snippet lives in its own file under /etc/caddy/snippets/ (tracked here
+# as config/caddy/snippets/*.conf) -- add, edit, or remove a snippet there and
+# this import doesn't need to change. Must come before "import sites-enabled"
+# below since site configs reference these snippets by name.
+import /etc/caddy/snippets/*.conf
 
-(standard-logs) {
-	log {
-		output file /var/log/caddy/{args[0]}.log {
-			roll_size 50mb
-			roll_keep 10
-			roll_keep_for 720h
-		}
-	}
-}
-
-# Canonical URLs are extensionless (the files on disk keep .html -- see
-# try_files in each site block). A request for the .html form -- an old
-# link, a typed URL, a crawler -- gets permanently redirected to the
-# extensionless URL rather than served directly, so there's only ever
-# one indexable/bookmarkable URL per page. The homepage is a special
-# case: its canonical URL is / itself, not /index -- try_files resolves
-# both /index and /index.html to the same content today, so redirect
-# those aliases straight to / before the general rule below would
-# otherwise send /index.html to the wrong place (/index).
-(strip-html-extension) {
-	@indexAlias path /index /index.html
-	redir @indexAlias / permanent
-
-	@dotHtml {
-		path_regexp stripHtml ^(.+)\.html$
-	}
-	redir @dotHtml {re.stripHtml.1} permanent
-}
-
-(block_bots) {
-	@disallowed_bots {
-		# 1. Block known bad/AI/search actors
-		header_regexp User-Agent (?i)(googlebot|bingbot|yandex|baiduspider|duckduckbot|slurp|sogou|exabot|ia_archiver|archive.org_bot|mj12bot|ahrefsbot|semrushbot|dotbot|rogerbot|seznam|moatbot|sentibot|monitortests|speedy|lipperhey|backlinkbot|petalbot|pinterestbot|gptbot|chatgpt-user|google-extended|anthropic-ai|claudebot|ccbot|perplexitybot|youbot|bytespider|amazonbot|diffbot|omgilibot|imagesiftbot|cohere-ai|premai|yeti|infobot|branzybot|knowledge-graph|spbot|voltron|headless|phantomjs|puppeteer|selenium|playwright|python-requests|go-http-client|java-http-client|libwww-perl|wget|curl|axios|node-fetch|urllib|python-urllib)
-
-		# 2. Block empty User-Agents (scripts)
-		header User-Agent ""
-
-		# 3. EXCLUSIONS: Do NOT block these (Apple Messages & Mastodon/Fediverse)
-		# Apple Messages: "AppleMessagesBlastDoor" or "facebookexternalhit" (sometimes used by Apple)
-		# Mastodon: "Mastodon" or "http.rb"
-		not header_regexp User-Agent (?i)(AppleMessages|Mastodon|http.rb|facebookexternalhit)
-	}
-
-	abort @disallowed_bots
-}
-
-# ── API rate limiting ──────────────────────────────────────────────────────────
-# Requires caddy-ratelimit: https://github.com/mholt/caddy-ratelimit
-# Build Caddy with: xcaddy build --with github.com/mholt/caddy-ratelimit
-#
-# Usage: import api-rate-limits <unix_socket_path>
-#
-# Rate limit keys use {remote_host}, which resolves to the real client IP because
-# Cloudflare IPs are listed in trusted_proxies above.
-(api-rate-limits) {
-	# Diagnostics triggers an email — keep it very tight.
-	handle /api/v1/diagnostics {
-		rate_limit {
-			zone left_wordle_diagnostics {
-				key    {remote_host}
-				events 5
-				window 15m
-			}
-		}
-		reverse_proxy {args[0]}
-	}
-
-	# General API: generous enough for normal use and the guesser tool.
-	handle /api/* {
-		rate_limit {
-			zone left_wordle_api {
-				key    {remote_host}
-				events 120
-				window 1m
-			}
-		}
-		reverse_proxy {args[0]}
-	}
-}
-
-# 2. Import specific sites
+# Import specific sites
 import /etc/caddy/sites-enabled/*
