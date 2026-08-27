@@ -15,16 +15,24 @@ prod.left-wordle.com left-wordle.com {
 
 	handle {
 		root * /home/deploy/left-wordle.com/current
-		file_server
 		try_files {path} {path}.html {path}/index.html
 
-		# Older blanket cache strategy -- production hasn't been redeployed
-		# since staging moved to the per-asset-type s-maxage/Cloudflare-purge
-		# approach (see staging.left-wordle.com). Update this to match once
-		# production's deploy pipeline is caught up to that change -- see
-		# [[cache-control-prod-todo]] memory.
-		@html path / *.html
-		header @html Cache-Control "no-cache"
+		# Mutable app files rely on browser revalidation plus Cloudflare purge
+		# at deploy time. s-maxage lets Cloudflare keep the edge hot without
+		# asking browsers to keep stale copies after a release.
+		@html path / *.html /privacy /release-notes /logins-and-passkeys /things-to-test /things-to-test-tasks /retire-words /seed-legacy /online-accounts
+		header @html Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
+
+		@releaseMarkers path /app_version.js /version.json
+		header @releaseMarkers Cache-Control "no-cache"
+
+		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css /404.css /content-page.css /retire-words.css /seed-legacy.css
+		header @clientCode Cache-Control "public, max-age=0, s-maxage=31536000, must-revalidate"
+
+		@staticAssets path *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.xml *.txt
+		header @staticAssets Cache-Control "public, max-age=86400, s-maxage=2592000"
+
+		file_server
 	}
 
 	# handle_errors runs its own middleware chain -- it doesn't inherit
@@ -33,7 +41,7 @@ prod.left-wordle.com left-wordle.com {
 	handle_errors 404 {
 		root * /home/deploy/left-wordle.com/current
 		rewrite * /404.html
-		header Cache-Control "no-cache"
+		header Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
 		file_server
 	}
 

@@ -17,7 +17,7 @@ staging.left-wordle.com {
 		# Mutable app files rely on browser revalidation plus Cloudflare purge
 		# at deploy time. s-maxage lets Cloudflare keep the edge hot without
 		# asking browsers to keep stale copies after a release.
-		@html path / *.html /privacy /release-notes /logins-and-passkeys /things-to-test /retire-words /seed-legacy
+		@html path / *.html /privacy /release-notes /logins-and-passkeys /things-to-test /things-to-test-tasks /retire-words /seed-legacy /online-accounts
 		header @html Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
 
 		@releaseMarkers path /app_version.js /version.json
