@@ -14,6 +14,15 @@
 #   4. Visit https://left-wordle.test
 #
 # Not deployed anywhere; not part of the production Caddyfile import chain.
+{
+	# launch.rb redirects this process's stdout to a file (then tails it back
+	# to the terminal itself) rather than inheriting our terminal directly --
+	# see launch.rb for why. Caddy's default log format picks JSON once
+	# stdout isn't a tty; force the human-readable format back regardless.
+	log {
+		format console
+	}
+}
 
 left-wordle.test {
 	# Caddy only auto-picks its internal (locally-trusted) CA for localhost,
