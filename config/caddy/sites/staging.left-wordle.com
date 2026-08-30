@@ -17,13 +17,17 @@ staging.left-wordle.com {
 		# Mutable app files rely on browser revalidation plus Cloudflare purge
 		# at deploy time. s-maxage lets Cloudflare keep the edge hot without
 		# asking browsers to keep stale copies after a release.
-		@html path / *.html /privacy /release-notes /logins-and-passkeys /things-to-test /things-to-test-tasks /retire-words /seed-legacy /online-accounts
+		@html path / *.html /privacy /release-notes /logins-and-passkeys /things-to-test /things-to-test-tasks /retire-words /seed-legacy /online-accounts /stats-checker
 		header @html Cache-Control "public, max-age=0, s-maxage=7200, must-revalidate"
 
+		# Deliberately NOT covered by a bare *.js wildcard: a wildcard that
+		# matched /app_version.js would override this no-cache and the app
+		# could stop noticing new releases. Every stylesheet and script now
+		# lives under /src/, so @clientCode never reaches this file.
 		@releaseMarkers path /app_version.js /version.json
 		header @releaseMarkers Cache-Control "no-cache"
 
-		@clientCode path /app_config.js /src/*.js /src/*.css /things-to-test.css /404.css /content-page.css /retire-words.css /seed-legacy.css
+		@clientCode path /app_config.js /src/*.js /src/*.css
 		header @clientCode Cache-Control "public, max-age=0, s-maxage=31536000, must-revalidate"
 
 		@staticAssets path *.png *.jpg *.jpeg *.gif *.svg *.ico *.webp *.xml *.txt

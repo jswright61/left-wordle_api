@@ -68,14 +68,14 @@ module CloudflareCacheRulesTask
         environment,
         "cache_html",
         "Left Wordle - Cache HTML At Edge (#{environment})",
-        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and (http.request.uri.path eq \"/\" or http.request.uri.path.extension eq \"html\" or http.request.uri.path in {\"/privacy\" \"/release-notes\" \"/logins-and-passkeys\" \"/things-to-test\" \"/retire-words\" \"/seed-legacy\"}))",
+        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and (http.request.uri.path eq \"/\" or http.request.uri.path.extension eq \"html\" or http.request.uri.path in {\"/privacy\" \"/release-notes\" \"/logins-and-passkeys\" \"/things-to-test\" \"/retire-words\" \"/seed-legacy\" \"/online-accounts\" \"/stats-checker\"}))",
         cacheable_action_parameters
       ),
       rule(
         environment,
         "cache_client_code",
         "Left Wordle - Cache Client Code At Edge (#{environment})",
-        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and ((http.request.uri.path in {\"/app_config.js\" \"/things-to-test.css\"}) or (starts_with(http.request.uri.path, \"/src/\") and http.request.uri.path.extension in {\"js\" \"css\"})))",
+        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and ((http.request.uri.path eq \"/app_config.js\") or (starts_with(http.request.uri.path, \"/src/\") and http.request.uri.path.extension in {\"js\" \"css\"})))",
         cacheable_action_parameters
       ),
       rule(
