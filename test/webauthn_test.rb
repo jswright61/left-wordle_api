@@ -606,6 +606,62 @@ class WebauthnTest < Minitest::Test
     end
   end
 
+  def test_live_play_cannot_take_over_another_users_row
+    device_id = SecureRandom.uuid
+    date = "2026-04-03"
+
+    owner = register_new_device!
+    post_json "/api/v1/game/progress",
+      {date: date, mode: "regular", guesses: [["crane", "01001"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
+    assert_equal owner["user_id"], row.user_id, "precondition: the row belongs to the first user"
+
+    with_second_device do
+      register_new_device!
+      # Same device id and date, from a different authenticated account --
+      # the takeover attempt this scoping exists to stop.
+      post_json "/api/v1/game/progress",
+        {date: date, mode: "regular", guesses: [["stole", "22222"], ["plate", "11111"]]},
+        {"HTTP_X_DEVICE_ID" => device_id}
+
+      row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
+      assert_equal owner["user_id"], row.user_id, "a second user must never take ownership of an existing row"
+      assert_equal 1, row.guesses.length, "the other user's guesses must not be overwritten either"
+
+      history = json_get("/api/v2/history")
+      assert_empty history, "the row must not surface in the second user's history"
+    end
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_anonymous_play_still_updates_a_row_attached_to_a_user
+    device_id = SecureRandom.uuid
+    date = "2026-04-04"
+
+    owner = register_new_device!
+    post_json "/api/v1/game/progress",
+      {date: date, mode: "regular", guesses: [["crane", "01001"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    # The session-expires-mid-game flow: same device, now logged out, keeps
+    # playing offline and keeps firing progress. It must still land, and must
+    # not detach the row from its owner.
+    with_second_device do
+      post_json "/api/v1/game/progress",
+        {date: date, mode: "regular", guesses: [["crane", "01001"], ["stole", "22222"]]},
+        {"HTTP_X_DEVICE_ID" => device_id}
+    end
+
+    row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
+    assert_equal 2, row.guesses.length, "an anonymous write must still update the row"
+    assert_equal owner["user_id"], row.user_id, "and must never un-attach it"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   def test_history_import_attaches_a_previously_anonymous_row
     device_id = SecureRandom.uuid
     DB[:played_games].insert(

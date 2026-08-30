@@ -643,6 +643,29 @@ class LeftWordleApi < Sinatra::Base
       country_code if country_code.is_a?(String) && country_code.match?(/\A[A-Za-z]{2}\z/)
     end
 
+    # Phase 0 of the played_games ownership rework: client_device_id arrives
+    # from the client -- the X-Device-ID header, or an import row's device_id
+    # field -- and it is half of this table's unique key, so *any* caller who
+    # knows a device id can address someone else's row. Until identity moves
+    # off the device id entirely, every authenticated write is scoped here to
+    # a row that is either unclaimed or already the caller's. A row belonging
+    # to a different user matches no ON CONFLICT DO UPDATE ... WHERE, so the
+    # write is dropped rather than applied: no ownership takeover, and no
+    # tampering with the other columns either.
+    #
+    # Anonymous writes are deliberately left unscoped. They cannot reassign
+    # ownership (user_id is coalesced and excluded.user_id is NULL), and
+    # scoping them would break a real flow: a session that expires mid-game
+    # leaves the device playing offline, still firing progress calls for a
+    # row that is already attached to the user it just stopped being.
+    def owned_row_scope(user_id)
+      return {} unless user_id
+      {update_where: Sequel.|(
+        {Sequel[:played_games][:user_id] => nil},
+        {Sequel[:played_games][:user_id] => user_id}
+      )}
+    end
+
     def record_game_initiation!(client_device_id, country_code, date, puzzle_number, user_id = nil)
       DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
@@ -656,9 +679,12 @@ class LeftWordleApi < Sinatra::Base
           ),
           country_code: Sequel.function(:coalesce, Sequel[:played_games][:country_code], Sequel[:excluded][:country_code]),
           # A device's rows attach to a user once it has an active session,
-          # and never get un-attached by a later anonymous request.
+          # and never get un-attached by a later anonymous request. This
+          # coalesce guards the anonymous case only -- cross-*user* takeover
+          # is prevented by owned_row_scope, not here.
           user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
-        }
+        },
+        **owned_row_scope(user_id)
       ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
@@ -688,7 +714,8 @@ class LeftWordleApi < Sinatra::Base
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
           country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
           user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
-        }
+        },
+        **owned_row_scope(user_id)
       ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
@@ -1210,27 +1237,35 @@ class LeftWordleApi < Sinatra::Base
 
       is_new_row = PlayedGame.where(client_device_id: client_device_id, date: date).empty?
 
-      DB[:played_games].insert_conflict(
+      # RETURNING tells us whether the row was actually written. owned_row_scope
+      # suppresses the update when the conflicting row belongs to someone else,
+      # and a suppressed ON CONFLICT DO UPDATE returns no rows at all -- which
+      # is exactly the case where this import must not count toward the caller's
+      # statistics further down.
+      written = DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           # First attachment wins: an import may claim a row that's still
           # anonymous (its own pre-account play), but never re-assigns a row
-          # already attached to a user -- device_id here is client-supplied,
-          # so excluded-first would let any authenticated import take over
-          # another account's row. Mirrors the never-un-attached invariant
-          # documented on record_game_initiation!.
+          # already attached to a user. Belt and braces with owned_row_scope
+          # below, which stops the write reaching this row in the first place.
           user_id: Sequel.function(:coalesce, Sequel[:played_games][:user_id], Sequel[:excluded][:user_id]),
           puzzle_num: Sequel[:excluded][:puzzle_num],
           mode: Sequel[:excluded][:mode],
           game_status: Sequel.function(:coalesce, Sequel[:played_games][:game_status], Sequel[:excluded][:game_status]),
           guesses: Sequel.function(:coalesce, Sequel[:played_games][:guesses], Sequel[:excluded][:guesses]),
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at])
-        }
-      ).insert(
+        },
+        **owned_row_scope(user.id)
+      ).returning(:id).insert(
         user_id: user.id, client_device_id: client_device_id, date: date, puzzle_num: puzzle_num,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
         completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
       )
+
+      # Someone else's row -- nothing was written, so nothing is imported and
+      # no statistics move.
+      return {row: :skipped, stats: nil} if written.nil? || written.empty?
 
       stats = game_status ? apply_played_game_to_statistics!(user, puzzle_num, game_status) : nil
       {row: (is_new_row ? :imported : :skipped), stats: stats}
