@@ -1213,7 +1213,13 @@ class LeftWordleApi < Sinatra::Base
       DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
-          user_id: Sequel[:excluded][:user_id],
+          # First attachment wins: an import may claim a row that's still
+          # anonymous (its own pre-account play), but never re-assigns a row
+          # already attached to a user -- device_id here is client-supplied,
+          # so excluded-first would let any authenticated import take over
+          # another account's row. Mirrors the never-un-attached invariant
+          # documented on record_game_initiation!.
+          user_id: Sequel.function(:coalesce, Sequel[:played_games][:user_id], Sequel[:excluded][:user_id]),
           puzzle_num: Sequel[:excluded][:puzzle_num],
           mode: Sequel[:excluded][:mode],
           game_status: Sequel.function(:coalesce, Sequel[:played_games][:game_status], Sequel[:excluded][:game_status]),

@@ -587,6 +587,41 @@ class WebauthnTest < Minitest::Test
     assert_equal 1, stats["guesses"]["fail"]
   end
 
+  def test_history_import_cannot_reassign_a_row_already_attached_to_another_user
+    device_id = SecureRandom.uuid
+
+    first_body = register_new_device!
+    import_history!([{puzzle_num: 800, date: "2026-04-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], first_body["csrf_token"])
+    owner_id = first_body["user_id"]
+
+    with_second_device do
+      second_body = register_new_device!
+      import_history!([{puzzle_num: 800, date: "2026-04-01", game_status: "FAIL", guesses: n_guesses(6), device_id: device_id}], second_body["csrf_token"])
+
+      row = PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 1))
+      assert_equal owner_id, row.user_id, "an import must never re-assign a row already attached to another user"
+
+      history = json_get("/api/v2/history")
+      assert_nil history["800"], "the row must not surface in the second user's history"
+    end
+  end
+
+  def test_history_import_attaches_a_previously_anonymous_row
+    device_id = SecureRandom.uuid
+    DB[:played_games].insert(
+      client_device_id: device_id, date: Date.new(2026, 4, 2), puzzle_num: 801,
+      updated_at: Sequel::CURRENT_TIMESTAMP
+    )
+
+    body = register_new_device!
+    import_history!([{puzzle_num: 801, date: "2026-04-02", game_status: "WIN", guesses: n_guesses(4), device_id: device_id}], body["csrf_token"])
+
+    row = PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 2))
+    assert_equal body["user_id"], row.user_id, "an import should claim the importer's own anonymous pre-account rows"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   def test_multi_device_same_puzzle_first_arrival_wins_and_loser_is_preserved
     body = register_new_device!
     csrf = body["csrf_token"]
