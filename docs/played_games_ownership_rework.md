@@ -3,9 +3,11 @@
 Status: Phase 0 complete (api `e307916`). Phase 0.5 complete (api
 `d10004e`). Phase 1 complete: client minting (client `3c67a32`), api
 accept/store/return (api `2767b12`, migration 022), client send/adopt plus
-the completion replay (client `b1b6dd2`). Deploy order still applies: the
-api must reach production before the client change ships. Phases 2–4 below
-are designed but not built.
+the completion replay (client `b1b6dd2`). Phase 2 complete (api `a4b3a4b`,
+migration 023): the `games` table, the dual-write, and the
+backfill/verify tasks. Deploy order still applies: the api must reach
+production before the client change ships, and `games:backfill` runs only
+after the dual-write is live. Phases 3–4 below are designed but not built.
 
 This is a data-model change with an API-contract surface, so it lives in
 `api/docs/`, but it moves both repos: `CLAUDE.md`'s companion-repo rule
@@ -182,11 +184,14 @@ ids (they're in every exported backup) could pre-insert them under their own
 account and block your writes. Per-user uniqueness — `UNIQUE (user_id,
 client_game_id)` — is all that identity, dedup, and ordering ever needed;
 the server mints its own PK. When a request arrives without a client id (old
-clients), the server mints the `client_game_id` too. (Column naming —
-`client_game_id` vs `client_uuid` — and any remaining questions about the
-client-minted id's exact role are deliberately left open until the Phase 2
-migration is written; the wire field stays `game_id` regardless, matching
-what client `3c67a32` already stores.)
+clients), the server mints the `client_game_id` too.
+
+Naming, settled when migration 023 was written: the column is
+`client_game_id`, parallel to `played_games.client_device_id` — "the
+client's id for a game" as that is "the client's id for a device". The
+alternative `client_uuid` says what the value *is* rather than what it
+identifies. The wire field stays `game_id`, matching what client `3c67a32`
+already stores.
 
 **Self-healing multi-device writes.** If a second device misses the
 in-progress state and mints its own id for a puzzle the user already started
@@ -363,6 +368,39 @@ theirs to drive.
 
 Phase 2 is api-only, invisible to clients, and revertible by dropping the
 table and the dual-write.
+
+**As built** (api `a4b3a4b`, migration 023):
+
+- The merge rules are all "never lose what's already recorded", which turned
+  out to be uniformly correct rather than needing the live and import paths
+  to differ: `client_game_id` first-wins (so the id the client converges on
+  is stable), `game_status` and `completed_at` keep-first (so no lagging
+  retry, out-of-order arrival, or re-import can flip a recorded result), and
+  `guesses` longest-wins — which both takes the newest board during live
+  play and survives the two ways a shorter one arrives later (an
+  out-of-order progress retry, and a guess-less import entry that must not
+  blank a real board).
+- A failed `games` write never breaks gameplay (played_games still has the
+  row) but is logged, not swallowed: Phase 3's gate is "do the two tables
+  agree", and a silent dual-write failure is what would make that
+  comparison lie.
+- The dual-write sits *behind* `owned_row_scope` on the import path, so an
+  import aimed at another user's row creates no `games` row either.
+- The response still reports `played_games.game_id`, not the `games` row's
+  `client_game_id`. They agree in the single-device case; for a user on two
+  devices played_games holds two ids while games holds the first. Flipping
+  the response to the games row is deliberately deferred to Phase 3 with
+  the reads, so Phase 2 stays a pure no-op for clients and the revert stays
+  clean.
+- Backdated ids use PostgreSQL 18's `uuidv7(shift)`:
+  `uuidv7(coalesce(completed_at, created_at) - now())` embeds the true play
+  time. `created_at` is carried across unchanged so the audit trail still
+  records when the row actually arrived.
+- `rake games:verify` reports missing rows and status mismatches against the
+  canonical view — a small rehearsal of the Phase 3 comparison. Its
+  "games with no played_games counterpart" line is expected to grow, not
+  stay zero: it counts games created after the backfill, and after Phase 4
+  drops `user_id` it counts everything.
 
 ### Phase 3 — cut reads over to `games` (the risky one)
 
