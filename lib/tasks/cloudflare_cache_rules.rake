@@ -6,14 +6,36 @@ require "uri"
 
 module CloudflareCacheRulesTask
   API_BASE = "https://api.cloudflare.com/client/v4"
+
+  # Every rule shares one action -- "eligible for cache, respect the origin's
+  # TTLs" -- so the HTML, client-code and static-asset rules that used to be
+  # separate are one rule now. Caddy is where the per-class TTLs live;
+  # splitting them here only spent the free plan's 10-rule budget to express
+  # the same decision three times. See docs/cache_rules_verification.md.
+  CACHEABLE_PATHS = %w[
+    /privacy
+    /release-notes
+    /logins-and-passkeys
+    /things-to-test
+    /things-to-test-tasks
+    /retire-words
+    /seed-legacy
+    /online-accounts
+    /stats-checker
+    /app_config.js
+    /app_version.js
+    /version.json
+  ].freeze
+  CLIENT_CODE_EXTENSIONS = %w[js css].freeze
   ENVIRONMENT_HOSTS = {
     "prod" => "left-wordle.com",
     "production" => "left-wordle.com",
     "staging" => "staging.left-wordle.com"
   }.freeze
-  MANAGED_RULE_COUNT = 5
+  MANAGED_DESCRIPTION_PREFIX = "Left Wordle - "
   PHASE = "http_request_cache_settings"
   ROOT_ZONE_NAME = "left-wordle.com"
+  STATIC_ASSET_EXTENSIONS = %w[png jpg jpeg gif svg ico webp xml txt].freeze
   TOKEN_ENV = "CF_CACHE_RULES_TOKEN"
 
   module_function
@@ -66,23 +88,9 @@ module CloudflareCacheRulesTask
       ),
       rule(
         environment,
-        "cache_html",
-        "Left Wordle - Cache HTML At Edge (#{environment})",
-        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and (http.request.uri.path eq \"/\" or http.request.uri.path.extension eq \"html\" or http.request.uri.path in {\"/privacy\" \"/release-notes\" \"/logins-and-passkeys\" \"/things-to-test\" \"/retire-words\" \"/seed-legacy\" \"/online-accounts\" \"/stats-checker\"}))",
-        cacheable_action_parameters
-      ),
-      rule(
-        environment,
-        "cache_client_code",
-        "Left Wordle - Cache Client Code At Edge (#{environment})",
-        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and ((http.request.uri.path eq \"/app_config.js\") or (starts_with(http.request.uri.path, \"/src/\") and http.request.uri.path.extension in {\"js\" \"css\"})))",
-        cacheable_action_parameters
-      ),
-      rule(
-        environment,
-        "cache_static_assets",
-        "Left Wordle - Cache Static Assets (#{environment})",
-        "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and http.request.uri.path.extension in {\"png\" \"jpg\" \"jpeg\" \"gif\" \"svg\" \"ico\" \"webp\" \"xml\" \"txt\"})",
+        "cache_site_content",
+        "Left Wordle - Cache Site Content At Edge (#{environment})",
+        site_content_expression(host),
         cacheable_action_parameters
       )
     ]
@@ -107,6 +115,14 @@ module CloudflareCacheRulesTask
       [error["code"], error["message"]].compact.join(": ")
     }.reject(&:empty?)
     errors.empty? ? payload.inspect : errors.join("; ")
+  end
+
+  def managed_ref_prefix(environment)
+    "left_wordle_#{environment}_"
+  end
+
+  def quoted_set(values)
+    "{#{values.map { |value| "\"#{value}\"" }.join(" ")}}"
   end
 
   def request_class(method)
@@ -141,7 +157,7 @@ module CloudflareCacheRulesTask
       description: description,
       enabled: true,
       expression: expression,
-      ref: "left_wordle_#{environment}_#{key}"
+      ref: "#{managed_ref_prefix(environment)}#{key}"
     }
   end
 
@@ -154,18 +170,19 @@ module CloudflareCacheRulesTask
 
     zone_id = resolve_zone_id(token)
     desired_rules = cache_rules(environment, host)
-    managed_base_descriptions = desired_rules.map { |rule| rule.fetch(:description).delete_suffix(" (#{environment})") }
-    managed_descriptions = desired_rules.map { |rule| rule.fetch(:description) }
-    managed_refs = desired_rules.map { |rule| rule.fetch(:ref) }
     existing_ruleset = fetch_entrypoint_ruleset(token, zone_id)
     existing_rules = Array(existing_ruleset && existing_ruleset["rules"])
+
+    # Matched by ref prefix rather than an exact list of the current refs, so
+    # that retiring or renaming a rule sweeps its old copy instead of stranding
+    # it as "unmanaged" forever -- which is how merging three rules into one
+    # would otherwise leave the zone holding both sets.
     unmanaged_rules = existing_rules.reject { |rule|
       description = rule["description"].to_s
       expression = rule["expression"].to_s
 
-      managed_refs.include?(rule["ref"]) ||
-        managed_descriptions.include?(description) ||
-        (managed_base_descriptions.include?(description) && expression.include?("http.host eq \"#{host}\""))
+      rule["ref"].to_s.start_with?(managed_ref_prefix(environment)) ||
+        (description.start_with?(MANAGED_DESCRIPTION_PREFIX) && expression.include?("http.host eq \"#{host}\""))
     }
 
     # The entrypoint PUT accepts only mutable fields. Do not include response
@@ -177,8 +194,26 @@ module CloudflareCacheRulesTask
     api_request(:put, "/zones/#{zone_id}/rulesets/phases/#{PHASE}/entrypoint", token: token, body: body)
 
     puts "Updated Cloudflare cache rules for #{host}."
-    puts "Managed #{MANAGED_RULE_COUNT} rule(s):"
+    puts "Managed #{desired_rules.size} rule(s):"
     desired_rules.each { |rule| puts "  #{rule.fetch(:description)}" }
+  end
+
+  # /app_version.js and /version.json sit in CACHEABLE_PATHS with everything
+  # else because respect_origin is all this rule says: Caddy answers no-cache
+  # for those two and s-maxage=31536000 for /app_config.js, and one rule
+  # carries both. Without a rule they fall through to the zone's Browser Cache
+  # TTL, which rewrites the no-cache to max-age=14400 and can leave a browser
+  # four hours behind a release.
+  def site_content_expression(host)
+    conditions = [
+      "http.request.uri.path eq \"/\"",
+      "http.request.uri.path.extension eq \"html\"",
+      "http.request.uri.path in #{quoted_set(CACHEABLE_PATHS)}",
+      "(starts_with(http.request.uri.path, \"/src/\") and http.request.uri.path.extension in #{quoted_set(CLIENT_CODE_EXTENSIONS)})",
+      "http.request.uri.path.extension in #{quoted_set(STATIC_ASSET_EXTENSIONS)}"
+    ]
+
+    "(http.host eq \"#{host}\" and http.request.method eq \"GET\" and (#{conditions.join(" or ")}))"
   end
 
   def usage

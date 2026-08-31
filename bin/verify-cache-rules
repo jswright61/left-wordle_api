@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+#
+# Verifies the Cloudflare cache rules and the Caddy Cache-Control headers agree
+# with cloudflare_caching_setup.md. Run after 'rake create_cache_rules[<env>]'.
+#
+#   bin/verify-cache-rules staging
+#   bin/verify-cache-rules prod
+#
+# Exits non-zero if any check fails.
+
+set -uo pipefail
+
+case "${1:-}" in
+  staging) HOST="https://staging.left-wordle.com" ;;
+  prod|production) HOST="https://left-wordle.com" ;;
+  *) echo "Usage: $(basename "$0") [staging|prod]" >&2; exit 64 ;;
+esac
+
+HTML_CC="public, max-age=0, s-maxage=7200, must-revalidate"
+CODE_CC="public, max-age=0, s-maxage=31536000, must-revalidate"
+ASSET_CC="public, max-age=86400, s-maxage=2592000"
+MARKER_CC="no-cache"
+ANSWER_CC="public, max-age=300, s-maxage=86400"
+DYNAMIC_CC="no-store"
+
+# Edge-cacheable statuses vs. statuses that mean Cloudflare declined to cache.
+CACHEABLE_RE='^(HIT|MISS|EXPIRED|REVALIDATED|UPDATING|STALE)$'
+BYPASS_RE='^(DYNAMIC|BYPASS|NONE/UNKNOWN)?$'
+
+pass=0
+fail=0
+failures=()
+
+report() { # status label [detail]
+  if [ "$1" = ok ]; then
+    pass=$((pass + 1))
+    printf '  \033[32mPASS\033[0m  %s\n' "$2"
+  else
+    fail=$((fail + 1))
+    printf '  \033[31mFAIL\033[0m  %s\n' "$2"
+    printf '%s\n' "$3" | sed 's/^/          /'
+    failures+=("$2"$'\n'"$3")
+  fi
+}
+
+# check <path> <expected cache-control> <cacheable|bypass|header-only> [curl args...]
+check() {
+  local path="$1" want_cc="$2" mode="$3"; shift 3
+  local headers got_cc got_status
+
+  headers=$(curl -sS -D - -o /dev/null "$@" "${HOST}${path}" 2>&1)
+  got_cc=$(printf '%s' "$headers" | grep -im1 '^cache-control:' | sed 's/^[Cc]ache-[Cc]ontrol: *//' | tr -d '\r')
+  got_status=$(printf '%s' "$headers" | grep -im1 '^cf-cache-status:' | sed 's/^[Cc][Ff]-[Cc]ache-[Ss]tatus: *//' | tr -d '\r')
+
+  if [ "$got_cc" != "$want_cc" ]; then
+    report bad "$path — Cache-Control" "want: ${want_cc}
+got:  ${got_cc:-<none>}"
+  else
+    report ok "$path — Cache-Control"
+  fi
+
+  if [ "$mode" = header-only ]; then
+    : # Cache-Control is the whole assertion; edge behavior is not specified.
+  elif [ "$mode" = cacheable ]; then
+    if [[ "$got_status" =~ $CACHEABLE_RE ]]; then
+      report ok "$path — edge cacheable (${got_status})"
+    else
+      report bad "$path — edge cacheable" "want a cacheable CF-Cache-Status, got: ${got_status:-<absent>}
+a DYNAMIC here means no cache rule covers this path"
+    fi
+  else
+    if [[ "$got_status" =~ $BYPASS_RE ]]; then
+      report ok "$path — bypassed (${got_status:-absent})"
+    else
+      report bad "$path — bypassed" "must never be edge cached, got: ${got_status}"
+    fi
+  fi
+}
+
+echo "Verifying ${HOST}"
+echo
+echo "App shell and content pages (origin: ${HTML_CC})"
+for p in / /privacy /release-notes /logins-and-passkeys /things-to-test \
+         /things-to-test-tasks /retire-words /seed-legacy /online-accounts /stats-checker; do
+  check "$p" "$HTML_CC" cacheable
+done
+
+echo
+echo "Release markers (origin: ${MARKER_CC}) — a max-age here means the zone Browser Cache TTL won"
+check /app_version.js "$MARKER_CC" cacheable
+check /version.json   "$MARKER_CC" cacheable
+
+echo
+echo "Client code (origin: ${CODE_CC})"
+for p in /app_config.js /src/wordle.js /src/wordle.css; do
+  check "$p" "$CODE_CC" cacheable
+done
+
+echo
+echo "Static assets (origin: ${ASSET_CC})"
+for p in /favicon.ico /robots.txt /sitemap.xml; do
+  check "$p" "$ASSET_CC" cacheable
+done
+
+echo
+echo "Answer API — cacheable, query string must stay in the cache key"
+check "/api/v1/game/answer?date=2021-06-19" "$ANSWER_CC" cacheable -H 'Sec-Fetch-Site: same-origin'
+
+echo
+echo "Dynamic API and the guesser — never cached"
+check /api/v1/health "$DYNAMIC_CC" bypass -H 'Sec-Fetch-Site: same-origin'
+check /api/v1/game/start "$DYNAMIC_CC" bypass \
+  -X POST -H 'Sec-Fetch-Site: same-origin' -H 'Content-Type: application/json' \
+  -H 'X-Device-Id: 00000000-0000-4000-8000-000000000001' \
+  --data '{"date":"2021-06-19","puzzle_num":0}'
+
+echo
+echo "404s keep the app-shell policy"
+# Header only: an arbitrary unknown path matches no cache rule, so Cloudflare
+# returns DYNAMIC and a typo'd URL never occupies the edge. What matters is
+# that Caddy's handle_errors block still sets a header at all -- it runs its
+# own middleware chain and does not inherit the one above it.
+check /no-such-page-verify "$HTML_CC" header-only
+
+echo
+printf '%s\n' "----------------------------------------------------------"
+printf 'Result: %d passed, %d failed  (%d checks against %s)\n' \
+  "$pass" "$fail" "$((pass + fail))" "$HOST"
+
+# Guarded rather than expanded unconditionally: under 'set -u', bash 3.2 --
+# still the system bash on macOS -- treats "${failures[@]}" on an empty array
+# as an unbound variable.
+if [ "$fail" -gt 0 ]; then
+  echo
+  printf '\033[31m%d failed check(s):\033[0m\n' "$fail"
+  n=1
+  for record in "${failures[@]}"; do
+    printf '\n  %d. %s\n' "$n" "${record%%$'\n'*}"
+    printf '%s\n' "${record#*$'\n'}" | sed 's/^/     /'
+    n=$((n + 1))
+  done
+  echo
+  exit 1
+fi
+
+echo
