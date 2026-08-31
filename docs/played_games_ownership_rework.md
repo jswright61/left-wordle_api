@@ -1,10 +1,11 @@
 # played_games Ownership Rework
 
 Status: Phase 0 complete (api `e307916`). Phase 0.5 complete (api
-`d10004e`). Phase 1: client minting done (client `3c67a32`), api
-accept/store/return done (api `2767b12`, migration 022); the client-side
-send/adopt work and the completion replay remain. Phases 2–4 below are
-designed but not built.
+`d10004e`). Phase 1 complete: client minting (client `3c67a32`), api
+accept/store/return (api `2767b12`, migration 022), client send/adopt plus
+the completion replay (client `b1b6dd2`). Deploy order still applies: the
+api must reach production before the client change ships. Phases 2–4 below
+are designed but not built.
 
 This is a data-model change with an API-contract surface, so it lives in
 `api/docs/`, but it moves both repos: `CLAUDE.md`'s companion-repo rule
@@ -279,10 +280,14 @@ device id, never a 400); stored keep-first in the transitional
 `played_games.game_id` column; and returned — every game write responds
 with the stored id via `RETURNING`, and history rows include `game_id`.
 
-Not yet done (client): sending the id on those calls, adopting the returned
-winner, mapping `game_id` from server history rows
-(`serverHistoryToLocalHistory` still maps `game_id: null`), and the
-completion replay below.
+The client half is done (client `b1b6dd2`): the id rides on all three game
+calls (including the queued-retry start payload) and history-import
+entries; the client adopts the returned winner (in memory always, persisted
+to gameState only while offline); `serverHistoryToLocalHistory` maps the
+server's `game_id`; the per-guess save snapshot carries `gameId` so the
+session-death handoff keeps the game identifiable; and the completion
+replay below is implemented, hooked at the proven-session moment
+(`refreshProfile`, alongside `flushPendingSync`).
 
 Known gap: per `online_play_redesign.md`, online devices don't write game
 data to local storage, so their games get no locally-recorded id (the
