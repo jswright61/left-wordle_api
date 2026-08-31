@@ -6,6 +6,14 @@ staging.left-wordle.com {
 	import api-rate-limits unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
 	import strip-html-extension
 
+	# The snippet is defined for every site by the global snippets import, but
+	# it does nothing until a site block invokes it -- which is why dotfiles
+	# were served here for as long as the snippet has existed. It carves out
+	# /.well-known/* so ACME and passkey paths still resolve. Position within
+	# this block is cosmetic: Caddy sorts the snippet's matcher-bearing handle
+	# ahead of the bare catch-all below no matter where the import appears.
+	import hide-dot-files
+
 	handle /guesser* {
 		reverse_proxy unix//home/deploy/staging_left_wordle_api/shared/tmp/sockets/puma.sock
 	}
