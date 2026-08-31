@@ -14,6 +14,18 @@ require_relative "../app"
 module ApiTest
   include Rack::Test::Methods
 
+  # Origins the suites treat as browser-allowed. The app builds its real list
+  # from config/app_config.yml only, so each setup overrides
+  # settings.allowed_origins with these -- they just have to be stable and
+  # obviously not a real deployment.
+  #
+  # Named here rather than passed through ENV["CORS_ORIGINS"], which is what
+  # this was before: an environment variable that looked like app
+  # configuration but was read only by the tests themselves. That
+  # misdirection is why removing it as "dead" quietly broke four tests
+  # instead of failing loudly at the place it was set.
+  TEST_ALLOWED_ORIGINS = %w[https://left-wordle.example https://alternate.example].freeze
+
   def app
     LeftWordleApi
   end

@@ -156,8 +156,7 @@ class VerboseLoggingApiTest < Minitest::Test
 
   def setup
     VerboseLogging.clear!
-    origins = ENV["CORS_ORIGINS"].to_s.split(",").map(&:strip).reject(&:empty?)
-    LeftWordleApi.set :allowed_origins, origins.freeze
+    LeftWordleApi.set :allowed_origins, TEST_ALLOWED_ORIGINS
     header "Authorization", "Bearer 1234"
   end
 
@@ -223,7 +222,7 @@ class VerboseLoggingApiTest < Minitest::Test
   # API token itself.
   def test_post_verbose_requires_the_server_api_token
     header "Authorization", nil
-    origin = ENV["CORS_ORIGINS"].to_s.split(",").first.strip
+    origin = TEST_ALLOWED_ORIGINS.first
 
     post_json "/api/v1/debug/verbose", {enabled: true}, {"HTTP_ORIGIN" => origin}
 
@@ -233,7 +232,7 @@ class VerboseLoggingApiTest < Minitest::Test
 
   def test_get_verbose_requires_the_server_api_token
     header "Authorization", nil
-    origin = ENV["CORS_ORIGINS"].to_s.split(",").first.strip
+    origin = TEST_ALLOWED_ORIGINS.first
 
     get "/api/v1/debug/verbose", {}, {"HTTP_ORIGIN" => origin}
 

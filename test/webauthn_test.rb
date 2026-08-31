@@ -8,8 +8,7 @@ class WebauthnTest < Minitest::Test
   include ApiTest
 
   def setup
-    origins = ENV["CORS_ORIGINS"].to_s.split(",").map(&:strip).reject(&:empty?)
-    LeftWordleApi.set :allowed_origins, origins.freeze
+    LeftWordleApi.set :allowed_origins, TEST_ALLOWED_ORIGINS
     header "Authorization", "Bearer 1234"
     @created_user_ids = []
     @fake_client = WebAuthn::FakeClient.new(LeftWordleApi.settings.webauthn_origin)
