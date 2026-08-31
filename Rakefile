@@ -356,6 +356,12 @@ end
 
 load File.join(__dir__, "lib/tasks/scheduler.rake")
 load File.join(__dir__, "lib/tasks/storage_snapshots.rake")
+# scheduler:tick registers stats_adjustments:prune as a scheduled task and
+# invokes it by name, so leaving this unloaded meant every tick logged
+# "Don't know how to build task" and moved on -- the retention prune has
+# never actually run.
+load File.join(__dir__, "lib/tasks/stats_adjustments.rake")
 load File.join(__dir__, "lib/tasks/cloudflare_cache_rules.rake")
+load File.join(__dir__, "lib/tasks/games.rake")
 
 task default: :test

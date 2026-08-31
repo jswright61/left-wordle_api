@@ -10,6 +10,7 @@ require_relative "lib/models/guesser_user"
 require_relative "lib/models/answer"
 require_relative "lib/models/legal_word"
 require_relative "lib/models/played_game"
+require_relative "lib/models/game"
 require_relative "lib/models/user"
 require_relative "lib/models/passkey_credential"
 require_relative "lib/models/session"
@@ -680,6 +681,71 @@ class LeftWordleApi < Sinatra::Base
       {update_where: owned}
     end
 
+    # -- games dual-write (Phase 2, docs/played_games_ownership_rework.md) ---
+    #
+    # Every authenticated write to played_games is mirrored here into the
+    # user-owned games table. Nothing reads games yet -- Phase 3 moves reads
+    # over, after comparing the two in production -- so this exists purely to
+    # accumulate a correct table alongside the old one.
+    #
+    # Keyed (user_id, puzzle_num), so the multi-device case that produced two
+    # played_games rows produces one row here: the second device's write
+    # conflicts and becomes an update of the first. That is the whole point of
+    # the rework, and it is why the merge rules below are all
+    # "never lose what's already recorded" rather than "last write wins":
+    #
+    # - client_game_id: first id wins, so the id the client is told to
+    #   converge on never changes underneath it.
+    # - game_status: keep-first, so a recorded WIN/FAIL can never be flipped
+    #   by a lagging progress retry, an out-of-order arrival, or a re-import
+    #   carrying a different result. A row created by a start/progress call
+    #   holds NULL, so the eventual completion still lands.
+    # - completed_at: keep-first for the same reason.
+    # - guesses: longest wins. Live play sends the whole board each time, so
+    #   this both takes the newest board and survives the two ways a shorter
+    #   one can arrive later -- an out-of-order progress retry, and an import
+    #   entry that carries no guesses at all (the client's history payload
+    #   often doesn't) which must not blank out a real board.
+    def upsert_game!(user_id, client_game_id, date, puzzle_number, mode: nil, game_status: nil, guesses: nil, completed_at: nil)
+      return nil unless user_id
+
+      incoming_guesses = Sequel[:excluded][:guesses]
+      existing_guesses = Sequel.function(:coalesce, Sequel[:games][:guesses], Sequel.pg_jsonb([]))
+
+      DB[:games].insert_conflict(
+        target: [:user_id, :puzzle_num],
+        update: {
+          client_game_id: Sequel.function(:coalesce, Sequel[:games][:client_game_id], Sequel[:excluded][:client_game_id]),
+          mode: Sequel.function(:coalesce, Sequel[:games][:mode], Sequel[:excluded][:mode]),
+          game_status: Sequel.function(:coalesce, Sequel[:games][:game_status], Sequel[:excluded][:game_status]),
+          completed_at: Sequel.function(:coalesce, Sequel[:games][:completed_at], Sequel[:excluded][:completed_at]),
+          guesses: Sequel.case(
+            {Sequel.lit(
+              "jsonb_array_length(coalesce(excluded.guesses, '[]'::jsonb)) >= jsonb_array_length(?)",
+              existing_guesses
+            ) => incoming_guesses},
+            Sequel[:games][:guesses]
+          ),
+          updated_at: Sequel::CURRENT_TIMESTAMP
+        }
+      ).insert(
+        # A request without a game_id (an older client) still needs one --
+        # client_game_id is NOT NULL, and dedup/ordering depend on it.
+        client_game_id: client_game_id || Sequel.function(:uuidv7),
+        user_id: user_id, puzzle_num: puzzle_number, date: date,
+        mode: mode, game_status: game_status,
+        guesses: (guesses ? Sequel.pg_jsonb(guesses) : nil),
+        completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
+      )
+    rescue Sequel::DatabaseError => e
+      # Never let the new table break the old path: gameplay still succeeds
+      # on played_games alone. Logged rather than swallowed because Phase 3's
+      # go/no-go is "do the two tables agree", and a silent dual-write
+      # failure is exactly what would make that comparison lie.
+      warn "[games dual-write] #{e.class}: #{e.message} (user=#{user_id} puzzle=#{puzzle_number})"
+      nil
+    end
+
     # game_id (here and in record_game_event!) is the client-minted UUIDv7
     # from the ownership rework's Phase 1 (docs/played_games_ownership_rework.md):
     # stored keep-first -- coalesce(existing, excluded) -- so the first id a
@@ -711,7 +777,9 @@ class LeftWordleApi < Sinatra::Base
         country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
         user_id: user_id, game_id: game_id
       )
-      written&.dig(0, :game_id)
+      stored_game_id = written&.dig(0, :game_id)
+      upsert_game!(user_id, stored_game_id || game_id, date, puzzle_number)
+      stored_game_id
     rescue Sequel::DatabaseError
       nil
     end
@@ -745,7 +813,17 @@ class LeftWordleApi < Sinatra::Base
         country_code: country_code, completed_at: (completed ? Sequel::CURRENT_TIMESTAMP : nil),
         updated_at: Sequel::CURRENT_TIMESTAMP, user_id: user_id, game_id: game_id
       )
-      written&.dig(0, :game_id)
+      stored_game_id = written&.dig(0, :game_id)
+      upsert_game!(
+        user_id, stored_game_id || game_id, date, puzzle_number,
+        mode: mode, game_status: game_status, guesses: guesses,
+        # The played_games row uses CURRENT_TIMESTAMP for this; reading the
+        # clock again here would differ by microseconds, which is noise the
+        # Phase 3 comparison would have to explain away. Take the value the
+        # row actually got.
+        completed_at: (completed ? Sequel::CURRENT_TIMESTAMP : nil)
+      )
+      stored_game_id
     end
 
     def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil, game_id = nil)
@@ -1299,6 +1377,14 @@ class LeftWordleApi < Sinatra::Base
       # Someone else's row -- nothing was written, so nothing is imported and
       # no statistics move.
       return {row: :skipped, stats: nil} if written.nil? || written.empty?
+
+      # Dual-write (Phase 2). Deliberately after the owned_row_scope gate
+      # above: an import aimed at another user's row writes nothing anywhere,
+      # so games can't be used to smuggle in a row played_games refused.
+      upsert_game!(
+        user.id, game_id, date, puzzle_num,
+        mode: mode, game_status: game_status, guesses: guesses, completed_at: completed_at
+      )
 
       stats = game_status ? apply_played_game_to_statistics!(user, puzzle_num, game_status) : nil
       {row: (is_new_row ? :imported : :skipped), stats: stats}

@@ -787,6 +787,153 @@ class WebauthnTest < Minitest::Test
     assert(rows.any? { |r| r.client_device_id == device_b && r.game_status == "FAIL" })
   end
 
+  # -- games dual-write (Phase 2 of docs/played_games_ownership_rework.md) --
+  #
+  # Nothing reads games yet; these pin that the table accumulates correctly
+  # alongside played_games, so Phase 3 has something trustworthy to cut over
+  # to.
+
+  def test_live_play_dual_writes_a_game_owned_by_the_user
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    game_id = SecureRandom.uuid
+    date = "2026-05-01"
+
+    post_json "/api/v1/game/progress",
+      {date: date, mode: "hard", guesses: [["crane", "01001"]], game_id: game_id},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    post_json "/api/v1/game/complete",
+      {date: date, mode: "hard", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]], game_id: game_id},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    game = Game.first(user_id: body["user_id"])
+    refute_nil game, "an authenticated game must be mirrored into games"
+    assert_equal game_id, game.client_game_id
+    assert_equal "WIN", game.game_status
+    assert_equal "hard", game.mode
+    assert_equal 2, game.guesses.length
+    refute_nil game.completed_at
+    assert_equal Date.parse(date), game.date
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  # The headline fix. Two devices, one puzzle: played_games still records two
+  # rows keyed by device, games records one keyed by (user_id, puzzle_num) --
+  # and the WIN lands on it even though the unfinished row arrived first,
+  # which is precisely the shape that used to lose the win entirely.
+  def test_two_devices_one_puzzle_produce_a_single_game_carrying_the_win
+    body = register_new_device!
+    device_a = SecureRandom.uuid
+    device_b = SecureRandom.uuid
+    date = "2026-05-02"
+    first_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/progress",
+      {date: date, mode: "regular", guesses: [["crane", "01001"]], game_id: first_id},
+      {"HTTP_X_DEVICE_ID" => device_a}
+    post_json "/api/v1/game/complete",
+      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]], game_id: SecureRandom.uuid},
+      {"HTTP_X_DEVICE_ID" => device_b}
+
+    games = Game.where(user_id: body["user_id"]).all
+    assert_equal 1, games.length, "one user playing one puzzle must be one game, whatever the device count"
+    assert_equal "WIN", games.first.game_status
+    assert_equal first_id, games.first.client_game_id, "first id wins, so the client converges on a stable value"
+    assert_equal 2, PlayedGame.where(user_id: body["user_id"], puzzle_num: games.first.puzzle_num).count,
+      "played_games still keeps both device rows -- only games collapses them"
+  ensure
+    [device_a, device_b].compact.each { |d| DB[:played_games].where(client_device_id: d).delete }
+  end
+
+  def test_a_lagging_progress_retry_cannot_reset_a_recorded_win
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    date = "2026-05-03"
+
+    post_json "/api/v1/game/complete",
+      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    post_json "/api/v1/game/progress",
+      {date: date, mode: "regular", guesses: [["crane", "01001"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    game = Game.first(user_id: body["user_id"])
+    assert_equal "WIN", game.game_status, "keep-first game_status must survive an out-of-order progress write"
+    assert_equal 2, game.guesses.length, "and the longer board must survive the shorter retry"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_anonymous_play_writes_nothing_to_games
+    device_id = SecureRandom.uuid
+    games_before = Game.count
+
+    with_second_device do
+      post_json "/api/v1/game/complete",
+        {date: "2026-05-04", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]], game_id: SecureRandom.uuid},
+        {"HTTP_X_DEVICE_ID" => device_id}
+    end
+
+    assert_equal games_before, Game.count, "games is user-owned; anonymous telemetry belongs only to played_games"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_an_older_client_sending_no_game_id_still_gets_one_minted
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-05-05", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    game = Game.first(user_id: body["user_id"])
+    refute_nil game
+    refute_nil game.client_game_id, "client_game_id is NOT NULL -- the server mints one when the client sends none"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_history_import_dual_writes_and_does_not_blank_a_live_board
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    date = "2026-05-06"
+
+    post_json "/api/v1/game/complete",
+      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    puzzle_num = Game.first(user_id: body["user_id"]).puzzle_num
+
+    # A history entry for the same puzzle carrying no guesses at all, which
+    # is the common shape of the client's import payload.
+    import_history!([{puzzle_num: puzzle_num, date: date, game_status: "WIN", device_id: SecureRandom.uuid}], body["csrf_token"])
+
+    games = Game.where(user_id: body["user_id"], puzzle_num: puzzle_num).all
+    assert_equal 1, games.length
+    assert_equal 2, games.first.guesses.length, "a guess-less import must not blank out a real board"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_an_import_aimed_at_another_users_row_writes_no_game
+    device_id = SecureRandom.uuid
+    first_body = register_new_device!
+    import_history!([{puzzle_num: 900, date: "2026-05-07", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], first_body["csrf_token"])
+
+    with_second_device do
+      second_body = register_new_device!
+      import_history!([{puzzle_num: 900, date: "2026-05-07", game_status: "FAIL", guesses: n_guesses(6), device_id: device_id}], second_body["csrf_token"])
+
+      assert_equal 0, Game.where(user_id: second_body["user_id"]).count,
+        "the dual-write sits behind owned_row_scope, so a refused import creates no game either"
+    end
+
+    assert_equal "WIN", Game.first(user_id: first_body["user_id"], puzzle_num: 900).game_status
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   private
 
   def import_history!(entries, csrf_token)
