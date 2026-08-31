@@ -637,7 +637,11 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  def test_anonymous_play_still_updates_a_row_attached_to_a_user
+  # Phase 0.5 (docs/played_games_ownership_rework.md): anonymous updates are
+  # scoped to unclaimed rows. Anyone can send a claimed row's device id and
+  # date without a session, so an anonymous "completion" used to poison the
+  # canonical row and bounce the owner's real win as :non_canonical.
+  def test_anonymous_play_cannot_alter_a_row_attached_to_a_user
     device_id = SecureRandom.uuid
     date = "2026-04-04"
 
@@ -646,20 +650,74 @@ class WebauthnTest < Minitest::Test
       {date: date, mode: "regular", guesses: [["crane", "01001"]]},
       {"HTTP_X_DEVICE_ID" => device_id}
 
-    # The session-expires-mid-game flow: same device, now logged out, keeps
-    # playing offline and keeps firing progress. It must still land, and must
-    # not detach the row from its owner.
     with_second_device do
-      post_json "/api/v1/game/progress",
-        {date: date, mode: "regular", guesses: [["crane", "01001"], ["stole", "22222"]]},
+      post_json "/api/v1/game/complete",
+        {date: date, mode: "regular", game_status: "FAIL", guesses: n_guesses(6)},
         {"HTTP_X_DEVICE_ID" => device_id}
     end
 
     row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
-    assert_equal 2, row.guesses.length, "an anonymous write must still update the row"
-    assert_equal owner["user_id"], row.user_id, "and must never un-attach it"
+    assert_equal owner["user_id"], row.user_id, "the row must stay attached to its owner"
+    assert_nil row.game_status, "an anonymous write must not set game_status on a claimed row"
+    assert_equal 1, row.guesses.length, "an anonymous write must not overwrite a claimed row's guesses"
+
+    # And the owner's real completion still counts -- the poison this
+    # scoping exists to prevent.
+    post_json "/api/v1/game/complete",
+      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    assert_equal 1, get_profile!["statistics"]["gamesWon"]
   ensure
     DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_anonymous_play_still_updates_its_own_unclaimed_row
+    device_id = SecureRandom.uuid
+    date = "2026-04-04"
+
+    with_second_device do
+      post_json "/api/v1/game/progress",
+        {date: date, mode: "regular", guesses: [["crane", "01001"]]},
+        {"HTTP_X_DEVICE_ID" => device_id}
+      post_json "/api/v1/game/complete",
+        {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
+        {"HTTP_X_DEVICE_ID" => device_id}
+    end
+
+    row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
+    assert_equal "WIN", row.game_status, "anonymous telemetry must keep flowing to unclaimed rows"
+    assert_equal 2, row.guesses.length
+    assert_nil row.user_id
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  # Phase 0.5's canonical-prefers-completed rule: start on one device, finish
+  # on another. The first device's never-finished row used to be canonical
+  # (earliest arrival), so the second device's WIN bounced as :non_canonical
+  # and was lost forever.
+  def test_win_on_second_device_counts_when_first_device_left_the_game_unfinished
+    device_a = SecureRandom.uuid
+    device_b = SecureRandom.uuid
+    date = "2026-04-05"
+
+    register_new_device!
+    post_json "/api/v1/game/progress",
+      {date: date, mode: "regular", guesses: [["crane", "01001"]]},
+      {"HTTP_X_DEVICE_ID" => device_a}
+    post_json "/api/v1/game/complete",
+      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_b}
+
+    stats = get_profile!["statistics"]
+    assert_equal 1, stats["gamesWon"], "the phone's win must count despite the desktop's unfinished row arriving first"
+    assert_equal 1, stats["currentStreak"]
+
+    puzzle_num = PlayedGame.first(client_device_id: device_b, date: Date.parse(date)).puzzle_num
+    history = json_get("/api/v2/history")
+    assert_equal "WIN", history[puzzle_num.to_s]["game_status"], "history must surface the completed row, not the abandoned one"
+  ensure
+    [device_a, device_b].compact.each { |d| DB[:played_games].where(client_device_id: d).delete }
   end
 
   def test_history_import_attaches_a_previously_anonymous_row

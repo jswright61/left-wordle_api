@@ -653,17 +653,20 @@ class LeftWordleApi < Sinatra::Base
     # write is dropped rather than applied: no ownership takeover, and no
     # tampering with the other columns either.
     #
-    # Anonymous writes are deliberately left unscoped. They cannot reassign
-    # ownership (user_id is coalesced and excluded.user_id is NULL), and
-    # scoping them would break a real flow: a session that expires mid-game
-    # leaves the device playing offline, still firing progress calls for a
-    # row that is already attached to the user it just stopped being.
+    # Anonymous writes are scoped too (Phase 0.5): an update may only touch
+    # an unclaimed row. Unscoped anonymous updates let anyone knowing a
+    # device id overwrite guesses/mode and set game_status on a claimed row
+    # -- poisoning the canonical row so the owner's real completion bounced
+    # as :non_canonical. The cost is the session-expires-mid-game flow: a
+    # device that drops offline mid-game keeps firing anonymous progress at
+    # its now-claimed row, and those beats are now dropped instead of
+    # landing (they never applied statistics anyway -- see
+    # docs/played_games_ownership_rework.md, whose completion-replay design
+    # is the real fix for that game reaching the account).
     def owned_row_scope(user_id)
-      return {} unless user_id
-      {update_where: Sequel.|(
-        {Sequel[:played_games][:user_id] => nil},
-        {Sequel[:played_games][:user_id] => user_id}
-      )}
+      owned = {Sequel[:played_games][:user_id] => nil}
+      owned = Sequel.|(owned, {Sequel[:played_games][:user_id] => user_id}) if user_id
+      {update_where: owned}
     end
 
     def record_game_initiation!(client_device_id, country_code, date, puzzle_number, user_id = nil)
@@ -1146,13 +1149,16 @@ class LeftWordleApi < Sinatra::Base
 
     def history_get_response
       user = require_authenticated_user!
-      rows = PlayedGame.where(user_id: user.id).order(:created_at, :id).all
+      # Same order as canonical_played_game_for, so history surfaces the
+      # same row per puzzle that statistics counted.
+      rows = PlayedGame.where(user_id: user.id)
+        .order(Sequel.expr(game_status: nil), :created_at, :id).all
       json_response(history_hash_for(rows))
     end
 
-    # Rows are expected in ascending created_at (server-arrival) order --
-    # first arrival wins on a puzzle_num collision between devices, so once a
-    # key is set here it's never overwritten. See
+    # Rows are expected in canonical order (completed rows first, then
+    # ascending created_at) -- the first row seen for a puzzle_num is its
+    # canonical one, so once a key is set here it's never overwritten. See
     # canonical_played_game_for/CANONICALIZATION in the stats section below.
     def history_hash_for(rows)
       rows.each_with_object({}) do |row, hash|
@@ -1284,8 +1290,13 @@ class LeftWordleApi < Sinatra::Base
     #
     # currentStreakAnchorPuzzleNum tracks the last puzzle_num already
     # reflected in the numbers. A row only moves the numbers if it's the
-    # canonical (earliest server-arrival) row for its puzzle_num AND its
-    # puzzle_num is greater than the anchor. Anything at or behind the
+    # canonical row for its puzzle_num AND its puzzle_num is greater than
+    # the anchor. Canonical means: completed rows (game_status set) beat
+    # in-progress ones, earliest server-arrival breaks the tie. The
+    # completed-first preference (Phase 0.5 of
+    # docs/played_games_ownership_rework.md) is what keeps a start-on-desktop
+    # finish-on-phone win countable -- with pure arrival order the desktop's
+    # never-finished row shadowed the phone's WIN forever. Anything at or behind the
     # anchor -- a losing duplicate, or a row landing behind it (older
     # backfill, out-of-order arrival) -- is archival only: it's preserved
     # in played_games/history but never changes stats, regardless of the
@@ -1294,7 +1305,8 @@ class LeftWordleApi < Sinatra::Base
     # streak when it's exactly anchor + 1 -- anything further ahead is a
     # genuine gap and breaks it instead of leaving stats frozen forever.
     def canonical_played_game_for(user, puzzle_num)
-      PlayedGame.where(user_id: user.id, puzzle_num: puzzle_num).order(:created_at, :id).first
+      PlayedGame.where(user_id: user.id, puzzle_num: puzzle_num)
+        .order(Sequel.expr(game_status: nil), :created_at, :id).first
     end
 
     # A short, bounded (see stats_adjustments:prune) audit trail of
