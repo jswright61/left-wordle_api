@@ -164,7 +164,7 @@ class AppTest < Minitest::Test
     post_json "/api/v1/game/start", {date: "2021-06-19", puzzle_num: 0}, {"HTTP_X_DEVICE_ID" => client_device_id, "HTTP_CF_IPCOUNTRY" => "US"}
 
     assert last_response.ok?
-    assert_equal({"status" => "recorded"}, json_response)
+    assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
     played_game = PlayedGame.first(client_device_id: client_device_id)
     refute_nil played_game
     assert_equal "US", played_game.country_code
@@ -180,7 +180,7 @@ class AppTest < Minitest::Test
     post_json "/api/v1/game/start", {date: "2021-06-19", puzzle_num: 0}
 
     assert last_response.ok?
-    assert_equal({"status" => "recorded"}, json_response)
+    assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
     assert_equal played_game_count_before, PlayedGame.count
   end
 
@@ -237,7 +237,7 @@ class AppTest < Minitest::Test
     post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["train", "01000"], ["crane", "22222"]]), request_env
 
     assert last_response.ok?
-    assert_equal({"status" => "recorded"}, json_response)
+    assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
 
     played_game = PlayedGame.first(client_device_id: client_device_id)
     refute_nil played_game
@@ -351,7 +351,7 @@ class AppTest < Minitest::Test
     post_json "/api/v1/game/complete", {date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]}
 
     assert last_response.ok?
-    assert_equal({"status" => "recorded"}, json_response)
+    assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
   end
 
   def test_post_complete_is_idempotent_on_retry
@@ -371,7 +371,7 @@ class AppTest < Minitest::Test
     post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]]), request_env
 
     assert last_response.ok?
-    assert_equal({"status" => "recorded"}, json_response)
+    assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
 
     played_game = PlayedGame.first(client_device_id: client_device_id)
     refute_nil played_game
@@ -454,7 +454,61 @@ class AppTest < Minitest::Test
     post_json "/api/v1/game/progress", {date: "2021-06-19", mode: "regular", guesses: [["crane", "22222"]]}
 
     assert last_response.ok?
-    assert_equal({"status" => "recorded"}, json_response)
+    assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
+  end
+
+  # -- game_id (Phase 1 of docs/played_games_ownership_rework.md) ----------
+
+  def test_post_start_stores_and_returns_a_client_minted_game_id
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    game_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/start", {date: "2021-06-19", puzzle_num: 0, game_id: game_id}, {"HTTP_X_DEVICE_ID" => client_device_id}
+
+    assert last_response.ok?
+    assert_equal game_id, json_response["game_id"]
+    assert_equal game_id, PlayedGame.first(client_device_id: client_device_id).game_id
+  end
+
+  def test_first_game_id_wins_and_the_response_reports_the_winner
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+    first_id = SecureRandom.uuid
+    second_id = SecureRandom.uuid
+
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]], game_id: first_id), request_env
+    post "/api/v1/game/complete", JSON.generate(date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["train", "01000"], ["crane", "22222"]], game_id: second_id), request_env
+
+    assert last_response.ok?
+    assert_equal first_id, json_response["game_id"], "the response must report the stored id so the client converges on it"
+    assert_equal first_id, PlayedGame.first(client_device_id: client_device_id).game_id
+  end
+
+  def test_a_malformed_game_id_is_dropped_rather_than_rejected
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+
+    post_json "/api/v1/game/complete",
+      {date: "2021-06-19", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]], game_id: "not-a-uuid"},
+      {"HTTP_X_DEVICE_ID" => client_device_id}
+
+    assert last_response.ok?, "correlation data nothing depends on must not fail the gameplay call"
+    assert_nil json_response["game_id"]
+    row = PlayedGame.first(client_device_id: client_device_id)
+    assert_nil row.game_id
+    assert_equal "WIN", row.game_status, "the completion itself must still be recorded"
+  end
+
+  def test_a_lagging_retry_backfills_a_game_id_onto_a_row_that_has_none
+    @client_device_ids = [client_device_id = SecureRandom.uuid]
+    request_env = {"HTTP_X_DEVICE_ID" => client_device_id, "CONTENT_TYPE" => "application/json"}
+    game_id = SecureRandom.uuid
+
+    # An old-client or pre-upgrade write with no id, then a retry carrying one.
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]]), request_env
+    post "/api/v1/game/progress", JSON.generate(date: "2021-06-19", mode: "regular", guesses: [["train", "01000"]], game_id: game_id), request_env
+
+    assert_equal game_id, json_response["game_id"]
+    assert_equal game_id, PlayedGame.first(client_device_id: client_device_id).game_id
   end
 
   def test_get_answer_rejects_a_future_date

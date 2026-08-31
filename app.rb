@@ -559,11 +559,12 @@ class LeftWordleApi < Sinatra::Base
       halt_json(:bad_request, "puzzle_num is required") unless submitted_puzzle_number
       halt_json(:bad_request, "puzzle_num must match date") unless submitted_puzzle_number == puzzle_number
 
+      stored_game_id = nil
       if (client_device_id = extract_client_device_id)
-        record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number, current_user&.id)
+        stored_game_id = record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number, current_user&.id, extract_game_id(payload))
       end
 
-      json_response({status: "recorded"})
+      json_response({status: "recorded", game_id: stored_game_id})
     end
 
     def complete_response
@@ -590,11 +591,12 @@ class LeftWordleApi < Sinatra::Base
 
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
 
+      stored_game_id = nil
       if (client_device_id = extract_client_device_id)
-        record_game_completion!(client_device_id, extract_country_code, date, puzzle_number, mode, game_status, guesses, current_user&.id)
+        stored_game_id = record_game_completion!(client_device_id, extract_country_code, date, puzzle_number, mode, game_status, guesses, current_user&.id, extract_game_id(payload))
       end
 
-      json_response({status: "recorded"})
+      json_response({status: "recorded", game_id: stored_game_id})
     end
 
     # Live per-guess save of an in-progress (not yet WIN/FAIL) game -- called
@@ -626,16 +628,25 @@ class LeftWordleApi < Sinatra::Base
 
       puzzle_number = LeftWordle::Game.puzzle_number_for(date)
 
+      stored_game_id = nil
       if (client_device_id = extract_client_device_id)
-        record_game_progress!(client_device_id, extract_country_code, date, puzzle_number, mode, guesses, current_user&.id)
+        stored_game_id = record_game_progress!(client_device_id, extract_country_code, date, puzzle_number, mode, guesses, current_user&.id, extract_game_id(payload))
       end
 
-      json_response({status: "recorded"})
+      json_response({status: "recorded", game_id: stored_game_id})
     end
 
     def extract_client_device_id
       raw_device_id = request.env["HTTP_X_DEVICE_ID"]
       raw_device_id if raw_device_id.is_a?(String) && raw_device_id.match?(CLIENT_DEVICE_ID_PATTERN)
+    end
+
+    # Optional and validated softly, same treatment as a malformed device id:
+    # game_id is correlation data nothing depends on yet, so a bad value is
+    # dropped rather than failing the whole gameplay call with a 400.
+    def extract_game_id(payload)
+      raw_game_id = payload["game_id"]
+      raw_game_id if valid_uuid?(raw_game_id)
     end
 
     def extract_country_code
@@ -669,8 +680,14 @@ class LeftWordleApi < Sinatra::Base
       {update_where: owned}
     end
 
-    def record_game_initiation!(client_device_id, country_code, date, puzzle_number, user_id = nil)
-      DB[:played_games].insert_conflict(
+    # game_id (here and in record_game_event!) is the client-minted UUIDv7
+    # from the ownership rework's Phase 1 (docs/played_games_ownership_rework.md):
+    # stored keep-first -- coalesce(existing, excluded) -- so the first id a
+    # row sees wins, and RETURNING hands the winning id back so the response
+    # can tell the client which id to converge on. Identity, dedup and
+    # ordering only; it participates in no key and no authorization decision.
+    def record_game_initiation!(client_device_id, country_code, date, puzzle_number, user_id = nil, game_id = nil)
+      written = DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
@@ -685,14 +702,16 @@ class LeftWordleApi < Sinatra::Base
           # and never get un-attached by a later anonymous request. This
           # coalesce guards the anonymous case only -- cross-*user* takeover
           # is prevented by owned_row_scope, not here.
-          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
+          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id]),
+          game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
         },
         **owned_row_scope(user_id)
-      ).insert(
+      ).returning(:game_id).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
-        user_id: user_id
+        user_id: user_id, game_id: game_id
       )
+      written&.dig(0, :game_id)
     rescue Sequel::DatabaseError
       nil
     end
@@ -706,8 +725,8 @@ class LeftWordleApi < Sinatra::Base
     # unset. completed_at is only ever set by a completion call
     # (`completed:` true) and, like the other fields, coalesced so it's
     # never clobbered back to nil by a later progress write.
-    def record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, completed:)
-      DB[:played_games].insert_conflict(
+    def record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, game_id, completed:)
+      written = DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
@@ -716,28 +735,31 @@ class LeftWordleApi < Sinatra::Base
           guesses: Sequel[:excluded][:guesses],
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
           country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
-          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id])
+          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id]),
+          game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
         },
         **owned_row_scope(user_id)
-      ).insert(
+      ).returning(:game_id).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
         country_code: country_code, completed_at: (completed ? Sequel::CURRENT_TIMESTAMP : nil),
-        updated_at: Sequel::CURRENT_TIMESTAMP, user_id: user_id
+        updated_at: Sequel::CURRENT_TIMESTAMP, user_id: user_id, game_id: game_id
       )
+      written&.dig(0, :game_id)
     end
 
-    def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil)
-      record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, completed: true)
+    def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil, game_id = nil)
+      stored_game_id = record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, game_id, completed: true)
       apply_played_game_to_statistics!(User[user_id], puzzle_number, game_status) if user_id
+      stored_game_id
     rescue Sequel::DatabaseError
       nil
     end
 
     # No game_status (game isn't over yet) and no stats side effect --
     # apply_played_game_to_statistics! only ever runs from a completion.
-    def record_game_progress!(client_device_id, country_code, date, puzzle_number, mode, guesses, user_id = nil)
-      record_game_event!(client_device_id, country_code, date, puzzle_number, mode, nil, guesses, user_id, completed: false)
+    def record_game_progress!(client_device_id, country_code, date, puzzle_number, mode, guesses, user_id = nil, game_id = nil)
+      record_game_event!(client_device_id, country_code, date, puzzle_number, mode, nil, guesses, user_id, game_id, completed: false)
     rescue Sequel::DatabaseError
       nil
     end
@@ -1170,7 +1192,8 @@ class LeftWordleApi < Sinatra::Base
           mode: row.mode,
           game_status: row.game_status,
           guesses: row.guesses,
-          completed_at: row.completed_at&.iso8601
+          completed_at: row.completed_at&.iso8601,
+          game_id: row.game_id
         }
       end
     end
@@ -1212,7 +1235,9 @@ class LeftWordleApi < Sinatra::Base
     # game_status ("WIN"/"FAIL", already translated by the client from its
     # own local result encoding), guesses (optional [word, pattern] pairs),
     # completed_at (optional), device_id (optional, the device it was
-    # actually played on)}.
+    # actually played on), game_id (optional, the client-minted UUIDv7 the
+    # entry has carried since client 3c67a32 -- stored keep-first, like the
+    # live upserts)}.
     #
     # Always attempts the (client_device_id, date)-scoped upsert, even if the
     # user already has a row for this puzzle_num from a different device --
@@ -1240,6 +1265,7 @@ class LeftWordleApi < Sinatra::Base
       game_status = nil unless %w[WIN FAIL].include?(game_status)
       guesses = entry["guesses"].is_a?(Array) ? entry["guesses"] : []
       completed_at = safe_time(entry["completed_at"])
+      game_id = valid_uuid?(entry["game_id"]) ? entry["game_id"] : nil
 
       is_new_row = PlayedGame.where(client_device_id: client_device_id, date: date).empty?
 
@@ -1260,13 +1286,14 @@ class LeftWordleApi < Sinatra::Base
           mode: Sequel[:excluded][:mode],
           game_status: Sequel.function(:coalesce, Sequel[:played_games][:game_status], Sequel[:excluded][:game_status]),
           guesses: Sequel.function(:coalesce, Sequel[:played_games][:guesses], Sequel[:excluded][:guesses]),
-          completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at])
+          completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
+          game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
         },
         **owned_row_scope(user.id)
       ).returning(:id).insert(
         user_id: user.id, client_device_id: client_device_id, date: date, puzzle_num: puzzle_num,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
-        completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
+        completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP, game_id: game_id
       )
 
       # Someone else's row -- nothing was written, so nothing is imported and

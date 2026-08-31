@@ -736,6 +736,36 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
+  # Phase 1 (docs/played_games_ownership_rework.md): import entries carry the
+  # client-minted game_id local history has accumulated since client 3c67a32,
+  # stored keep-first and surfaced back through the history read.
+  def test_history_import_stores_a_game_id_and_history_returns_it
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    game_id = SecureRandom.uuid
+
+    import_history!([{puzzle_num: 810, date: "2026-04-06", game_status: "WIN", guesses: n_guesses(3), device_id: device_id, game_id: game_id}], body["csrf_token"])
+
+    assert_equal game_id, PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 6)).game_id
+    assert_equal game_id, json_get("/api/v2/history")["810"]["game_id"]
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_history_reimport_keeps_the_first_game_id
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    first_id = SecureRandom.uuid
+
+    entry = {puzzle_num: 811, date: "2026-04-07", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}
+    import_history!([entry.merge(game_id: first_id)], body["csrf_token"])
+    import_history!([entry.merge(game_id: SecureRandom.uuid)], body["csrf_token"])
+
+    assert_equal first_id, PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 7)).game_id
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   def test_multi_device_same_puzzle_first_arrival_wins_and_loser_is_preserved
     body = register_new_device!
     csrf = body["csrf_token"]

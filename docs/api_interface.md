@@ -99,7 +99,8 @@ This endpoint is telemetry-only. The client should not block gameplay on it.
 ```json
 {
   "date": "2021-06-19",
-  "puzzle_num": 0
+  "puzzle_num": 0,
+  "game_id": "0190a5c3-52ce-7d34-b1a1-0242ac120002"
 }
 ```
 
@@ -107,6 +108,7 @@ This endpoint is telemetry-only. The client should not block gameplay on it.
 |-------|------|----------|-------------|
 | `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
 | `puzzle_num` | integer | Yes | Days since puzzle epoch; must match the submitted date |
+| `game_id` | string | No | Client-minted UUIDv7 identifying this game (see `played_games_ownership_rework.md`, Phase 1). Stored keep-first per device/date row; a malformed value is dropped, never rejected. Also accepted by `/game/progress`, `/game/complete`, and `/api/v2/history/import` entries. |
 
 **Headers**
 
@@ -117,8 +119,13 @@ This endpoint is telemetry-only. The client should not block gameplay on it.
 
 **Response 200**
 ```json
-{ "status": "recorded" }
+{ "status": "recorded", "game_id": "0190a5c3-52ce-7d34-b1a1-0242ac120002" }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Always `recorded` |
+| `game_id` | string or null | The id stored on the row — the first id the row ever saw, which may differ from the one submitted. Clients should adopt this value. `null` when nothing was written (missing/malformed device id, or a row owned by another user) or the row has no id yet. |
 
 **Error Responses**
 
