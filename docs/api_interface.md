@@ -108,7 +108,7 @@ This endpoint is telemetry-only. The client should not block gameplay on it.
 |-------|------|----------|-------------|
 | `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
 | `puzzle_num` | integer | Yes | Days since puzzle epoch; must match the submitted date |
-| `game_id` | string | No | Client-minted UUIDv7 identifying this game (see `ownership_rework.md`, Phase 1). Stored keep-first per device/date row; a malformed value is dropped, never rejected. Also accepted by `/game/progress`, `/game/complete`, and `/api/v2/history/import` entries. |
+| `game_id` | string | No | Client-minted UUIDv7 identifying this game (see `ownership_rework.md`). For a signed-in caller it is stored keep-first on their `games` row, keyed by account and puzzle, so every device converges on one id. A malformed value is dropped, never rejected. Also accepted by `/game/progress`, `/game/complete`, and `/api/v2/history/import` entries. |
 
 **Headers**
 
@@ -125,7 +125,7 @@ This endpoint is telemetry-only. The client should not block gameplay on it.
 | Field | Type | Description |
 |-------|------|-------------|
 | `status` | string | Always `recorded` |
-| `game_id` | string or null | The id stored on the row — the first id the row ever saw, which may differ from the one submitted. Clients should adopt this value. `null` when nothing was written (missing/malformed device id, or a row owned by another user) or the row has no id yet. |
+| `game_id` | string or null | The id stored on the caller's game — the first id it ever saw, which may differ from the one submitted. Clients should adopt this value. **`null` for an anonymous caller**, which has no server-side game to converge on: anonymous play writes only device telemetry, so the client keeps the id it minted. |
 
 **Error Responses**
 
