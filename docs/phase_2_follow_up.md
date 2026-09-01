@@ -5,6 +5,7 @@ rework is; this one says what is still open and exactly how to get Phase 2
 onto staging and production safely.
 
 Written 2026-09-01, against api `4323398` and client `da7783f`.
+Updated 2026-09-01 for the release-candidate workflow in §3.1.
 
 ---
 
@@ -12,16 +13,33 @@ Written 2026-09-01, against api `4323398` and client `da7783f`.
 
 | | api | client |
 |---|---|---|
-| Last SemVer tag | `v1.0.5` = `4d56d3f` | `v1.0.5` = `da7783f` |
-| `Phase-1-Deploy` tag | `4d56d3f` (same commit as `v1.0.5`) | `da7783f` (same commit as `v1.0.5`) |
-| Branch head | `4323398` on `develop` | `da7783f` on `develop` |
-| Unreleased work | 3 commits past `v1.0.5` (all Phase 2) | none past `v1.0.5` |
+| Deployed (prod and staging) | `v1.0.4` = `462ed01` | `v1.0.4` |
+| Last SemVer tag | `v1.0.4` (after deleting `v1.0.5`) | `v1.0.4` |
+| Phase 1 RC | `phase-1-release-candidate` = `4d56d3f` | = `da7783f` |
+| Phase 2 RC | `phase-2-release-candidate` at `develop` tip | same |
+| Branch head | `develop` | `develop` |
 
-Unreleased api commits:
+**Phases 0 and 0.5 are already in production**, having shipped inside
+`v1.0.4` — that includes the anonymous-write scoping and the
+canonical-prefers-completed rule that stops the two-device lost win. The
+next release carries Phase 1 (both repos) and Phase 2 (api only).
 
+Unreleased api commits (since the deployed `v1.0.4`):
+
+- `2767b12` — **Phase 1** (api): `game_id` accepted, stored, returned
+- `7475c7b` — Cloudflare cache rule rework
+- `4d56d3f` — Caddy `hide-dot-files` import
 - `514b73a` — restores the test CORS origins as a constant (regression fix)
 - `a4b3a4b` — **Phase 2**: `games` table, dual-write, backfill/verify tasks
-- `4323398` — design-doc status update
+- `4323398`, `46ee706` — design doc and this runbook
+
+Unreleased client commits:
+
+- `b1b6dd2` — **Phase 1** (client): sends `game_id`, adopts the server's
+  winning id, and the session-death completion replay
+- `8206918` — e2e suite repair
+- `494807d` — corrected local-development README
+- `da7783f` — `export-ignore` for internal directories
 
 Everything above is committed on `develop` in both repos. **Nothing from
 Phase 1 or Phase 2 is deployed yet.**
@@ -29,6 +47,11 @@ Phase 1 or Phase 2 is deployed yet.**
 ---
 
 ## 2. Blockers — resolve before attempting any deploy
+
+> **Status:** §2.1 is resolved (notes written) and §2.2 is resolved (`v1.0.5`
+> deleted locally, `phase-*-release-candidate` tags in place). §2.3 and §2.4
+> are standing constraints, not one-off blockers. The one piece still
+> outstanding is deleting `v1.0.5` from the four remotes — see §3.1.
 
 ### 2.1 `v1.0.5` has no release-notes entry (blocks *both* repos)
 
@@ -107,31 +130,72 @@ step after the deploy reports success.
 Re-running the backfill is harmless (`ON CONFLICT DO NOTHING`), so when in
 doubt, run it again rather than reasoning about whether you needed to.
 
-### 3.1 Pick a version and prepare both repos
+### 3.1 Release-candidate workflow (current)
 
-Phase 2 is api-only in substance, so a patch bump is right. Assuming
-`v1.0.6`:
+`v1.0.5` was tagged at the Phase 1 commit and never deployed. It has been
+deleted so the number can be re-cut to cover Phase 1 *and* Phase 2 together
+— production is still on `v1.0.4`, so nothing is skipped by reusing it.
+
+**Already done on `develop`, not pushed and not merged:**
+
+- `phase-1-release-candidate` tagged at the old `v1.0.5` commit in both
+  repos (api `4d56d3f`, client `da7783f`), its message recording the phase
+  status there.
+- `v1.0.5` deleted **locally** in both repos.
+- `release-notes.html` gained a `v1-0-5` section (§2.1 resolved).
+- `things-to-test-tasks.html` re-pointed at this release; the verified
+  v1.0.4 items were pruned per that file's own convention.
+- `phase-2-release-candidate` tagged at the tip of `develop` in both repos.
+
+**Still to do — `v1.0.5` remains on four remotes.** The local deletes do not
+propagate, and pushes could not be made from the working session:
 
 ```bash
-# 1. Write release notes FIRST -- both repos' deploys check for them.
-#    client/release-notes.html needs an id="v1-0-6" section.
-#    (Cover v1.0.5's content too if that never shipped; see §2.1.)
+cd api
+for r in chris-rock codeberg origin paula-poundstone; do
+  git push $r :refs/tags/v1.0.5
+done
 
-# 2. Merge develop -> staging in BOTH repos (your call, not automated)
+cd ../client
+for r in chris-rock codeberg origin paula-poundstone; do
+  git push $r :refs/tags/v1.0.5
+done
+```
+
+If any remote still carries `v1.0.5` when you later push the re-cut tag,
+that push is rejected as a non-fast-forward tag update — delete first, then
+tag. Recovery, should it be wanted: api `v1.0.5` was tag object `709d9051`
+on commit `4d56d3f`; client `v1.0.5` was `3337a48a` on `da7783f`.
+
+**Then, when testing satisfies you:**
+
+```bash
+# 1. Merge develop -> staging in BOTH repos (deliberate, never automated)
 cd client && git checkout staging && git merge develop
 cd ../api && git checkout staging && git merge develop
 
-# 3. Tag the same version in both repos, on staging
-cd ../client && git tag -a v1.0.6 -m "Release 1.0.6"
-cd ../api    && git tag -a v1.0.6 -m "Release 1.0.6"
+# 2. Tag the same version in both repos, on staging
+cd ../client && git tag -a v1.0.5 -m "Release 1.0.5"
+cd ../api    && git tag -a v1.0.5 -m "Release 1.0.5"
 
-# 4. Push tags to the server remote and origin
-cd ../client && git push paula-poundstone v1.0.6 && git push origin v1.0.6
-cd ../api    && git push paula-poundstone v1.0.6 && git push origin v1.0.6
+# 3. Push branch and tag to the server remote (and the others)
+cd ../client && git push paula-poundstone staging && git push paula-poundstone v1.0.5
+cd ../api    && git push paula-poundstone staging && git push paula-poundstone v1.0.5
 ```
+
+Two things that will stop you if the order slips:
+
+- The release-notes check reads `release-notes.html` **out of the branch
+  being deployed**, not the working tree, so the notes must be committed and
+  merged into `staging` before the tag will pass.
+- `check-sibling-release` requires the sibling tag to be an **ancestor of
+  that same branch**. A tag left on `develop` does not satisfy it.
 
 `bin/deploy` runs `bundle exec rake test` and **deletes the local tag if the
 suite fails**, so expect to re-tag if that happens.
+
+The `phase-*-release-candidate` tags are bookmarks only — `bin/deploy`
+rejects any tag that is not `vX.Y.Z` or `vX.Y.Z-suffix` (§2.2).
 
 ### 3.2 Deploy to staging — api first
 
