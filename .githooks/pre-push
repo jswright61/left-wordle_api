@@ -6,6 +6,12 @@ url="${2:-}"
 
 while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
   [[ "$local_ref" == refs/tags/* ]] && continue
+  # A deletion arrives with local_ref "(delete)" and the ref being removed
+  # in remote_ref, so the tag test above never matched one. Since this hook
+  # reads local_ref rather than the current branch, that made deleting a
+  # remote tag impossible from any branch, main and staging included.
+  # Branch deletions still fall through to the check below, as before.
+  [[ "$local_ref" == "(delete)" && "$remote_ref" == refs/tags/* ]] && continue
   pushed_branch="${local_ref#refs/heads/}"
   if [[ "$pushed_branch" != "main" && "$pushed_branch" != "staging" ]]; then
     echo "pre-push: pushes are only allowed from main or staging." >&2
