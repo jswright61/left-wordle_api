@@ -222,6 +222,10 @@ module CloudflareCacheRulesTask
         CF_CACHE_RULES_TOKEN=... bundle exec rake 'create_cache_rules[staging]'
         CF_CACHE_RULES_TOKEN=... bundle exec rake 'create_cache_rules[prod]'
 
+      The token lives in the keychain under the account "scott":
+        CF_CACHE_RULES_TOKEN="$(security find-generic-password -w -a scott -s CF_CACHE_RULES_TOKEN)" \\
+          bundle exec rake 'create_cache_rules[staging]'
+
       Environment must be staging, prod, or production.
     TEXT
   end

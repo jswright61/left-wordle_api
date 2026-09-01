@@ -15,7 +15,8 @@ Setup, rule shapes, and the token instructions live in `cloudflare_caching_setup
 | Script | `bin/verify-cache-rules staging` / `bin/verify-cache-rules prod` |
 | Rule count | 3 per hostname, 6 of the free plan's 10 |
 | Zone ID | `8111259d817302b1c2a208e940e407b2` |
-| Rules task | `CF_CACHE_RULES_TOKEN=... bundle exec rake 'create_cache_rules[staging]'` |
+| Rules task | `bundle exec rake 'create_cache_rules[staging]'` with `CF_CACHE_RULES_TOKEN` set |
+| Tokens | keychain, account `scott`, services `CF_CACHE_RULES_TOKEN` and `CF_PURGE_CACHE_TOKEN` |
 | Purge | automatic on `deploy:published` in both repos |
 
 ---
@@ -119,7 +120,7 @@ Then load the site in a fresh private window and confirm the version shown in th
 The script tests behavior. This tests the rule set itself, which is what catches a rule that silently failed to write or one somebody disabled in the dashboard.
 
 ```bash
-curl -sS -H "Authorization: Bearer $CF_CACHE_RULES_TOKEN" \
+curl -sS -H "Authorization: Bearer $(security find-generic-password -w -a scott -s CF_CACHE_RULES_TOKEN)" \
   "https://api.cloudflare.com/client/v4/zones/8111259d817302b1c2a208e940e407b2/rulesets/phases/http_request_cache_settings/entrypoint" \
   | python3 -c 'import json,sys
 for r in json.load(sys.stdin)["result"].get("rules", []):
