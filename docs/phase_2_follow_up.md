@@ -116,19 +116,22 @@ merge up is a deliberate, human step — nothing here does it automatically.
 
 ## 3. Deployment runbook
 
-### 3.0 The one ordering rule that matters
+### 3.0 About the backfill
 
-> **`games:backfill` must run only after the dual-write code is live.**
+`games:backfill` is a manual step run once per environment after that
+environment's deploy. There is no ordering hazard to design around:
+migration 023 and the dual-write landed in the same commit (`a4b3a4b`), so
+no deployable release has the table without the code that fills it, and the
+backfill is not wired into the deploy.
 
-Migrations run at `deploy:updated`, *before* the symlink flip, so `games`
-exists while the old code is still serving. If the backfill ran in that
-window, any game completed between the backfill and the flip would land in
-`played_games` alone and never reach `games` — a silent gap in exactly the
-table Phase 3 is about to trust. Backfill is therefore a separate manual
-step after the deploy reports success.
+It is also self-correcting. It reads the canonical view of `played_games` —
+which is written on every authenticated request regardless — and inserts
+with `ON CONFLICT DO NOTHING`, so anything it misses is picked up by simply
+running it again. A failed or half-finished deploy cannot leave `games`
+permanently short; a re-run fills the gap.
 
-Re-running the backfill is harmless (`ON CONFLICT DO NOTHING`), so when in
-doubt, run it again rather than reasoning about whether you needed to.
+The only thing to actually remember: **run it on each environment.**
+Backfilling staging does nothing for production.
 
 ### 3.1 Release-candidate workflow (current)
 
@@ -141,15 +144,17 @@ deleted so the number can be re-cut to cover Phase 1 *and* Phase 2 together
 - `phase-1-release-candidate` tagged at the old `v1.0.5` commit in both
   repos (api `4d56d3f`, client `da7783f`), its message recording the phase
   status there.
-- `v1.0.5` deleted **locally** in both repos.
+- `v1.0.5` deleted locally in both repos, and deleted from all four client
+  remotes.
 - `release-notes.html` gained a `v1-0-5` section, so the §2.1 check will
   pass once it is merged and tagged.
 - `things-to-test-tasks.html` re-pointed at this release; the verified
   v1.0.4 items were pruned per that file's own convention.
 - `phase-2-release-candidate` tagged at the tip of `develop` in both repos.
 
-**Still to do — `v1.0.5` remains on four remotes.** The local deletes do not
-propagate, and pushes could not be made from the working session:
+**Still to do — `v1.0.5` remains on all four *api* remotes.** The client's
+are already deleted; a local delete does not propagate, and the api's four
+have not been pushed:
 
 ```bash
 cd api
@@ -157,16 +162,16 @@ for r in chris-rock codeberg origin paula-poundstone; do
   git push $r :refs/tags/v1.0.5
 done
 
-cd ../client
+# verify
 for r in chris-rock codeberg origin paula-poundstone; do
-  git push $r :refs/tags/v1.0.5
+  printf '%s: ' "$r"; git ls-remote --tags $r | grep -c 'refs/tags/v1\.0\.5$' || true
 done
 ```
 
-If any remote still carries `v1.0.5` when you later push the re-cut tag,
-that push is rejected as a non-fast-forward tag update — delete first, then
-tag. Recovery, should it be wanted: api `v1.0.5` was tag object `709d9051`
-on commit `4d56d3f`; client `v1.0.5` was `3337a48a` on `da7783f`.
+If a remote still carries `v1.0.5` when the re-cut tag is pushed, that push
+is rejected as a non-fast-forward tag update — delete first, then tag.
+Recovery, should it be wanted: api `v1.0.5` was tag object `709d9051` on
+commit `4d56d3f`; client `v1.0.5` was `3337a48a` on `da7783f`.
 
 **Then, when testing satisfies you:**
 
@@ -222,7 +227,7 @@ cd ../client && bin/deploy staging
 
 ### 3.3 Backfill staging, then verify
 
-Only after §3.2 reports success:
+Once §3.2 reports success:
 
 ```bash
 ssh deploy@paula-poundstone
@@ -266,7 +271,7 @@ cd ../client && git checkout main && git merge staging && git push paula-poundst
 bin/deploy production
 ```
 
-Then the production backfill — again, only after the deploy succeeds:
+Then the production backfill:
 
 ```bash
 ssh deploy@paula-poundstone
@@ -445,6 +450,6 @@ up, so it does not keep asserting things the tooling contradicts:
    varies, and that is what expand/contract depends on.
 2. Add that a release also requires a `release-notes.html` entry on the
    client, which gates the api deploy too.
-3. Note that migrations run automatically at `deploy:updated` (before the
-   symlink flip), which is why the backfill is a deliberate post-deploy step
-   rather than something to hook into the deploy.
+3. Note that migrations run automatically at `deploy:updated`, before the
+   symlink flip — worth knowing when reading a deploy log, though it has no
+   bearing on the backfill, which is a manual per-environment step.
