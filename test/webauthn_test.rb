@@ -934,6 +934,179 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
+  # -- Phase 3 dual-read (docs/played_games_ownership_rework.md) ------------
+  #
+  # With the flag off every read is computed both ways and compared but the
+  # played_games answer is still served; with it on the games answer is
+  # served. Divergences are recorded rather than logged so the soak's
+  # go/no-go is a query.
+
+  def test_agreeing_reads_record_no_divergence
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-01", mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]], game_id: SecureRandom.uuid},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    json_get("/api/v2/history")
+
+    assert_equal 0, GamesReadDivergence.where(user_id: body["user_id"]).count,
+      "the tables agree, so the soak signal must stay clean"
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_history_divergence_is_recorded_with_both_sides
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-02", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    # Force disagreement the only way that matters: make the games row say
+    # something the played_games row does not.
+    Game.where(user_id: body["user_id"]).update(game_status: "FAIL")
+    json_get("/api/v2/history")
+
+    row = GamesReadDivergence.first(user_id: body["user_id"], read_name: "history")
+    refute_nil row, "a disagreeing history read must be recorded"
+    assert_includes row.detail, "game_status"
+    assert_equal "WIN", row.played_games_value["game_status"]
+    assert_equal "FAIL", row.games_value["game_status"]
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_repeat_reads_bump_the_same_divergence_rather_than_multiplying_rows
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-03", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    Game.where(user_id: body["user_id"]).update(game_status: "FAIL")
+
+    3.times { json_get("/api/v2/history") }
+
+    rows = GamesReadDivergence.where(user_id: body["user_id"], read_name: "history").all
+    assert_equal 1, rows.length, "one row per disagreeing (read, user, puzzle), however often it is read"
+    assert_equal 3, rows.first.seen_count
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  # The one difference that is expected rather than alarming: a multi-device
+  # user's played_games canonical row can carry a different id than the games
+  # row, which keeps the first id it ever saw. Counting that as divergence
+  # would bury the signal the soak depends on.
+  def test_a_differing_game_id_alone_is_not_treated_as_divergence
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-04", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]], game_id: SecureRandom.uuid},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    Game.where(user_id: body["user_id"]).update(client_game_id: SecureRandom.uuid)
+
+    json_get("/api/v2/history")
+
+    assert_equal 0, GamesReadDivergence.where(user_id: body["user_id"]).count
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_the_flag_decides_which_history_is_served
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-05", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    puzzle_num = Game.first(user_id: body["user_id"]).puzzle_num
+    Game.where(user_id: body["user_id"]).update(game_status: "FAIL")
+
+    assert_equal "WIN", json_get("/api/v2/history")[puzzle_num.to_s]["game_status"],
+      "flag off must still serve the played_games answer"
+
+    with_games_reads do
+      assert_equal "FAIL", json_get("/api/v2/history")[puzzle_num.to_s]["game_status"],
+        "flag on must serve the games answer"
+    end
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_with_the_flag_on_the_response_id_comes_from_games
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    played_games_id = SecureRandom.uuid
+    games_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/progress",
+      {date: "2026-06-06", mode: "regular", guesses: [["crane", "01001"]], game_id: played_games_id},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    Game.where(user_id: body["user_id"]).update(client_game_id: games_id)
+
+    post_json "/api/v1/game/progress",
+      {date: "2026-06-06", mode: "regular", guesses: [["crane", "01001"], ["stole", "11111"]], game_id: played_games_id},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    assert_equal played_games_id, json_response["game_id"], "flag off keeps the played_games id"
+
+    with_games_reads do
+      post_json "/api/v1/game/progress",
+        {date: "2026-06-06", mode: "regular", guesses: [["crane", "01001"]], game_id: played_games_id},
+        {"HTTP_X_DEVICE_ID" => device_id}
+      assert_equal games_id, json_response["game_id"],
+        "flag on returns the games row's id, so every device converges on one value"
+    end
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  def test_anonymous_play_keeps_the_played_games_id_even_with_the_flag_on
+    device_id = SecureRandom.uuid
+    game_id = SecureRandom.uuid
+
+    with_games_reads do
+      with_second_device do
+        post_json "/api/v1/game/complete",
+          {date: "2026-06-07", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]], game_id: game_id},
+          {"HTTP_X_DEVICE_ID" => device_id}
+        assert_equal game_id, json_response["game_id"], "an anonymous caller has no games row to converge on"
+      end
+    end
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  # A divergence that can really happen rather than one staged by deleting a
+  # row: played_games overwrites guesses unconditionally, while games keeps
+  # the longest array it has seen. A completion carrying fewer guesses than
+  # the progress before it — an out-of-order arrival — leaves the two sides
+  # disagreeing about the guess count, which is what picks the histogram
+  # bucket. Deleting the games row first would prove nothing, since the
+  # dual-write recreates it before the stats read happens.
+  def test_a_stats_canonical_divergence_is_recorded
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/progress",
+      {date: "2026-06-08", mode: "regular", guesses: [["crane", "01001"], ["stole", "11111"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-08", mode: "regular", game_status: "WIN", guesses: [["stole", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    row = GamesReadDivergence.first(user_id: body["user_id"], read_name: "stats_canonical")
+    refute_nil row, "a disagreeing stats-canonical read must be recorded"
+    assert_equal "guess_count", row.detail
+    assert_equal 1, row.played_games_value["guess_count"]
+    assert_equal 2, row.games_value["guess_count"]
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   private
 
   def import_history!(entries, csrf_token)
@@ -997,6 +1170,16 @@ class WebauthnTest < Minitest::Test
       header "Authorization", "Bearer 1234"
       block.call
     end
+  end
+
+  # Phase 3's per-deployment read flag (config/app_config.yml's
+  # read_games_enabled). Off by default everywhere, including here, so the
+  # rest of the suite proves the dual-read comparison changes nothing.
+  def with_games_reads(&block)
+    LeftWordleApi.set :read_games_enabled, true
+    block.call
+  ensure
+    LeftWordleApi.set :read_games_enabled, false
   end
 
   def add_second_passkey!(csrf_token, nickname: "Second")

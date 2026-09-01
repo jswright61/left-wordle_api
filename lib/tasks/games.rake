@@ -146,4 +146,57 @@ namespace :games do
       puts "  MISMATCH user=#{r[:user_id]} puzzle=#{r[:puzzle_num]} played_games=#{r[:played_games_status].inspect} games=#{r[:games_status].inspect}"
     end
   end
+
+  # Phase 3's go/no-go signal. The soak asks one question -- "have the two
+  # reads stopped disagreeing for real traffic" -- and this answers it.
+  # Empty output is the result you are waiting for.
+  desc "Report dual-read divergences between played_games and games"
+  task :divergences, [:limit] do |_t, args|
+    require_relative "../db"
+
+    limit = (args[:limit] || 50).to_i
+    total = DB[:games_read_divergences].count
+
+    if total.zero?
+      puts "No read divergences recorded. (This is the result Phase 3 is waiting for.)"
+      next
+    end
+
+    puts "#{total} divergent (read, user, puzzle) combination(s) recorded."
+    puts
+    DB[:games_read_divergences]
+      .group_and_count(:read_name, :detail)
+      .order(Sequel.desc(:count))
+      .each { |r| puts format("  %-16s %-28s %d", r[:read_name], r[:detail].to_s[0, 28], r[:count]) }
+
+    puts
+    puts "Most recent #{[limit, total].min}:"
+    DB[:games_read_divergences]
+      .order(Sequel.desc(:last_seen_at))
+      .limit(limit)
+      .each do |r|
+        puts format("  %-16s user=%s puzzle=%-6s seen=%dx  %s",
+          r[:read_name], r[:user_id], r[:puzzle_num], r[:seen_count], r[:detail])
+        puts "      played_games: #{r[:played_games_value]}"
+        puts "      games:        #{r[:games_value]}"
+      end
+  end
+
+  # Divergences are evidence, not history worth keeping forever. Once a
+  # cause is understood and fixed, clearing lets the next soak window start
+  # from a clean signal rather than from a backlog that has to be explained
+  # every time.
+  desc "Delete recorded read divergences (optionally only those older than [days])"
+  task :clear_divergences, [:days] do |_t, args|
+    require_relative "../db"
+
+    scope = DB[:games_read_divergences]
+    if args[:days]
+      days = args[:days].to_i
+      scope = scope.where(Sequel.lit("last_seen_at < now() - (? * interval '1 day')", days))
+      puts "Deleted #{scope.delete} divergence row(s) last seen more than #{days} day(s) ago."
+    else
+      puts "Deleted #{scope.delete} divergence row(s)."
+    end
+  end
 end
