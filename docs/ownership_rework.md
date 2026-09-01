@@ -254,6 +254,41 @@ database restore undoes it.** Requires Phase 3's flag on in production long
 enough that reverting is unthinkable, plus a verified backup. Procedure:
 `docs/phase_4_runbook.md` on the branch.
 
+Phase 4 must not merge toward a release until Phase 3's gate has been met
+and stayed met, because migration 025 can't be undone by redeploying.
+
+**As built** (migrations 025–026):
+
+- `authenticated` is **sticky across a day**: `played_games.authenticated OR
+  excluded.authenticated`, so a device signed in for any part of a day stays
+  marked for it. The flag describes the day, not whichever request landed
+  last.
+- **Imports stop writing telemetry entirely.** An import is a user telling
+  us about games they already played; `played_games` records play this
+  server observed. Reconstructing rows from an import would put entries with
+  no country, no `initiated_at`, and a merely-claimed device id into the
+  table analysis runs on, and after this phase they'd be indistinguishable
+  from real play. The entry's `device_id` is no longer read at all, which
+  costs nothing: the client never sent one.
+- **`:non_canonical` survives, renamed `:status_mismatch`.** It no longer
+  asks "is this the winning row among several"; there's only ever one. It
+  asks "does the result being applied match what is recorded", which still
+  stops a replayed or duplicated completion from moving the numbers twice.
+  Nothing outside the api reads these symbols.
+- **Anonymous callers get `game_id: null`** instead of their own id echoed
+  back: there's no stored game to converge on, and echoing would imply a
+  persistence that doesn't exist. The client's `_adoptGameId` ignores null
+  and keeps the id it minted.
+- The `games:backfill` and `games:verify` tasks are deleted, not just
+  retired. Both read `played_games.user_id`, so after 025 they're
+  impossible rather than merely unnecessary.
+- The two ownership tests are re-aimed rather than deleted: the same
+  takeover attacks now run against the `games` model, including one that
+  supplies the victim's `game_id` and still can't reach their row.
+- What it leaves behind: `played_games` grows forever with nothing pruning
+  it, and `authenticated` is the only analysis dimension that survives the
+  split.
+
 ## 5. Current state (2026-10-11)
 
 **Deployed:** `v1.0.5` (Phases 1–2) and then `v1.0.6` are in production in
