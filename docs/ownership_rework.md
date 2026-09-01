@@ -210,6 +210,40 @@ pre-history aggregates). Staging can't reproduce that diversity. A prior
 full-recompute approach caused real data loss, which is why this phase gets
 the paranoid treatment. Procedure: `docs/phase_3_runbook.md` on the branch.
 
+Phase 3's *code* being written is not Phase 3 being done: the phase is
+finished when the divergences have been quiet on production traffic and the
+flag is on.
+
+**As built** (migration 024):
+
+- Divergences are recorded in a `games_read_divergences` table, not the
+  log. The soak's question is "have the two reads stopped disagreeing for
+  real traffic", which is a query; grepping journalctl across puma workers
+  is not, and rotation loses the history the decision rests on. One row per
+  disagreeing `(read_name, user_id, puzzle_num)`, bumped via `seen_count`
+  on repeat rather than duplicated, plus a per-read cap, so a user reloading
+  history can't bury the signal. `rake games:divergences` reports it;
+  `games:clear_divergences` resets it once a cause is understood.
+- **`game_id` is excluded from the history comparison, deliberately.** For a
+  user who played one puzzle on two devices, the canonical `played_games`
+  row may carry a different id than the `games` row, which keeps the first
+  id it ever saw. That difference is expected (it's what the response flip
+  below fixes), and counting it as divergence would bury the real signal.
+- The stats comparison looks only at what `next_statistics_for` actually
+  consumes: whether a row exists, its `game_status`, and its guess count.
+  Comparing more would manufacture divergences that can't move a number.
+- With the flag on, the response `game_id` also comes from the `games` row,
+  so every device converges on one id. This needs no client change:
+  `_adoptGameId` has taken the server's id as authoritative since Phase 1.
+  But until now the server always echoed back the id the client sent, so
+  adopting a *different* one is a path this phase activates for the first
+  time.
+- Comparison failures rescue and warn: diagnostics never take down the read
+  they observe.
+
+The full test suite passes unchanged with the flag off, which is what makes
+this safe to deploy ahead of any decision to flip it.
+
 ### Phase 4: drop `user_id` (built, not merged)
 
 Adds `authenticated` (sticky across a day), drops `played_games.user_id` and
