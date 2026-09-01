@@ -11,6 +11,7 @@ require_relative "lib/models/answer"
 require_relative "lib/models/legal_word"
 require_relative "lib/models/played_game"
 require_relative "lib/models/game"
+require_relative "lib/models/games_read_divergence"
 require_relative "lib/models/user"
 require_relative "lib/models/passkey_credential"
 require_relative "lib/models/session"
@@ -49,6 +50,12 @@ class LeftWordleApi < Sinatra::Base
   RATE_LIMIT_WINDOW_SECONDS = 60
   RATE_LIMIT_MAX_REQUESTS = 20
   RATE_LIMIT_MUTEX = Mutex.new
+  # Phase 3 dual-read comparison (see compare_history_reads!).
+  HISTORY_COMPARED_FIELDS = %i[puzzle_num date mode game_status guesses completed_at].freeze
+  # One user with a badly broken history should not be able to write a row
+  # per puzzle on every request. The unique index collapses repeats, but this
+  # bounds the work inside a single read too.
+  MAX_DIVERGENCES_PER_READ = 10
   RATE_LIMIT_BUCKETS = {}
 
   set :root, File.expand_path(__dir__)
@@ -67,6 +74,12 @@ class LeftWordleApi < Sinatra::Base
     set :session_token_ttl_days, (app_cfg["session_token_ttl_days"] || 365).to_i
     set :device_link_token_ttl_minutes, (app_cfg["device_link_token_ttl_minutes"] || 15).to_i
     set :webauthn_origin, app_cfg["webauthn_origin"]
+    # Phase 3 of docs/played_games_ownership_rework.md. Off means "read
+    # played_games as before, but compute the games answer too and record any
+    # disagreement"; on means "read games". Per-deployment, so staging can
+    # run flipped while production is still collecting evidence, and the
+    # revert is a config edit plus a restart rather than a deploy.
+    set :read_games_enabled, app_cfg["read_games_enabled"] == true
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
@@ -572,7 +585,7 @@ class LeftWordleApi < Sinatra::Base
         stored_game_id = record_game_initiation!(client_device_id, extract_country_code, date, puzzle_number, current_user&.id, extract_game_id(payload))
       end
 
-      json_response({status: "recorded", game_id: stored_game_id})
+      json_response({status: "recorded", game_id: response_game_id(stored_game_id, current_user&.id, puzzle_number)})
     end
 
     def complete_response
@@ -604,7 +617,7 @@ class LeftWordleApi < Sinatra::Base
         stored_game_id = record_game_completion!(client_device_id, extract_country_code, date, puzzle_number, mode, game_status, guesses, current_user&.id, extract_game_id(payload))
       end
 
-      json_response({status: "recorded", game_id: stored_game_id})
+      json_response({status: "recorded", game_id: response_game_id(stored_game_id, current_user&.id, puzzle_number)})
     end
 
     # Live per-guess save of an in-progress (not yet WIN/FAIL) game -- called
@@ -641,7 +654,7 @@ class LeftWordleApi < Sinatra::Base
         stored_game_id = record_game_progress!(client_device_id, extract_country_code, date, puzzle_number, mode, guesses, current_user&.id, extract_game_id(payload))
       end
 
-      json_response({status: "recorded", game_id: stored_game_id})
+      json_response({status: "recorded", game_id: response_game_id(stored_game_id, current_user&.id, puzzle_number)})
     end
 
     def extract_client_device_id
@@ -655,6 +668,18 @@ class LeftWordleApi < Sinatra::Base
     def extract_game_id(payload)
       raw_game_id = payload["game_id"]
       raw_game_id if valid_uuid?(raw_game_id)
+    end
+
+    # Which id the client is told to converge on (Phase 3 of
+    # docs/played_games_ownership_rework.md). played_games is keyed by
+    # device, so a user playing one puzzle on two devices has two rows and
+    # two ids, and which one this returned depended on which device asked.
+    # The games row is keyed (user_id, puzzle_num) and keeps the first id it
+    # ever saw, so with the flag on every device converges on the same value.
+    # Anonymous callers have no games row and keep the played_games id.
+    def response_game_id(stored_game_id, user_id, puzzle_number)
+      return stored_game_id unless settings.read_games_enabled && user_id
+      Game.where(user_id: user_id, puzzle_num: puzzle_number).get(:client_game_id) || stored_game_id
     end
 
     def extract_country_code
@@ -1260,7 +1285,105 @@ class LeftWordleApi < Sinatra::Base
       # same row per puzzle that statistics counted.
       rows = PlayedGame.where(user_id: user.id)
         .order(Sequel.expr(game_status: nil), :created_at, :id).all
-      json_response(history_hash_for(rows))
+      from_played_games = history_hash_for(rows)
+      from_games = history_hash_from_games(user)
+
+      compare_history_reads!(user, from_played_games, from_games)
+      json_response(settings.read_games_enabled ? from_games : from_played_games)
+    end
+
+    # The Phase 3 replacement for history_hash_for: no collapse, because
+    # UNIQUE (user_id, puzzle_num) already guarantees one row per puzzle.
+    # Ordered by puzzle_num purely for stable output; the hash is keyed, so
+    # order carries no meaning to the client.
+    def history_hash_from_games(user)
+      Game.where(user_id: user.id).order(:puzzle_num).each_with_object({}) do |row, hash|
+        hash[row.puzzle_num.to_s] = {
+          puzzle_num: row.puzzle_num,
+          date: row.date.iso8601,
+          mode: row.mode,
+          game_status: row.game_status,
+          guesses: row.guesses,
+          completed_at: row.completed_at&.iso8601,
+          game_id: row.client_game_id
+        }
+      end
+    end
+
+    # -- Phase 3 dual-read comparison ---------------------------------------
+    #
+    # Every read that Phase 3 moves to `games` is computed both ways on every
+    # request and the answers compared. Disagreements are recorded in
+    # games_read_divergences; agreement writes nothing. Until
+    # read_games_enabled is on, the played_games answer is still the one
+    # served, so this collects evidence without changing behavior -- which is
+    # the whole point, given app.rb's stats history (a prior
+    # recompute-from-history approach caused real data loss).
+    #
+    # game_id is deliberately NOT compared. For a user who played one puzzle
+    # on two devices, played_games has two rows and its canonical one may
+    # carry a different id than the games row, which keeps the first id it
+    # ever saw. That difference is expected and is exactly what flipping the
+    # response id fixes -- counting it as divergence would bury the signal
+    # the soak actually depends on.
+    def compare_history_reads!(user, from_played_games, from_games)
+      recorded = 0
+      (from_played_games.keys | from_games.keys).sort.each do |key|
+        break if recorded >= MAX_DIVERGENCES_PER_READ
+        old_row = from_played_games[key]
+        new_row = from_games[key]
+
+        detail =
+          if new_row.nil? then "missing_in_games"
+          elsif old_row.nil? then "missing_in_played_games"
+          else
+            differing = HISTORY_COMPARED_FIELDS.reject do |field|
+              comparable_value(old_row[field]) == comparable_value(new_row[field])
+            end
+            differing.any? ? differing.join(",") : nil
+          end
+        next unless detail
+
+        record_read_divergence!("history", user.id, key.to_i, detail, old_row, new_row)
+        recorded += 1
+      end
+    rescue => e
+      # Diagnostics must never take down the read they are observing.
+      warn "[games read compare] history: #{e.class}: #{e.message} (user=#{user.id})"
+    end
+
+    # Sequel's pg_json wrappers and Date/Time objects don't compare cleanly
+    # across the two reads, so normalize through plain JSON-ish values.
+    def comparable_value(value)
+      case value
+      when Sequel::Postgres::JSONArrayBase then value.to_a.map { |v| comparable_value(v) }
+      when Sequel::Postgres::JSONHashBase then value.to_h
+      when Array then value.map { |v| comparable_value(v) }
+      else value
+      end
+    end
+
+    def record_read_divergence!(read_name, user_id, puzzle_num, detail, played_games_value, games_value)
+      DB[:games_read_divergences].insert_conflict(
+        target: [:read_name, :user_id, :puzzle_num],
+        update: {
+          seen_count: Sequel.lit("games_read_divergences.seen_count + 1"),
+          last_seen_at: Sequel::CURRENT_TIMESTAMP,
+          # Keep the newest reading of what each side said: if the
+          # disagreement changes shape, the latest is the one worth chasing.
+          detail: Sequel[:excluded][:detail],
+          played_games_value: Sequel[:excluded][:played_games_value],
+          games_value: Sequel[:excluded][:games_value]
+        }
+      ).insert(
+        read_name: read_name, user_id: user_id, puzzle_num: puzzle_num, detail: detail,
+        played_games_value: Sequel.pg_jsonb(played_games_value),
+        games_value: Sequel.pg_jsonb(games_value),
+        created_at: Sequel::CURRENT_TIMESTAMP, last_seen_at: Sequel::CURRENT_TIMESTAMP
+      )
+    rescue Sequel::DatabaseError => e
+      warn "[games read compare] record failed: #{e.class}: #{e.message}"
+      nil
     end
 
     # Rows are expected in canonical order (completed rows first, then
@@ -1429,6 +1552,35 @@ class LeftWordleApi < Sinatra::Base
         .order(Sequel.expr(game_status: nil), :created_at, :id).first
     end
 
+    # Only what the stats derivation actually consumes off the canonical row
+    # is compared: whether a row exists at all, its game_status (which gates
+    # :non_canonical), and its guess count (which picks the histogram
+    # bucket). next_statistics_for reads nothing else from it, so comparing
+    # more would manufacture divergences that cannot affect a single number.
+    def compare_stats_canonical_reads!(user, puzzle_num, from_played_games, from_games)
+      old_view = stats_canonical_view(from_played_games)
+      new_view = stats_canonical_view(from_games)
+      return if old_view == new_view
+
+      detail =
+        if from_games.nil? then "missing_in_games"
+        elsif from_played_games.nil? then "missing_in_played_games"
+        else
+          old_view.keys.reject { |k| old_view[k] == new_view[k] }.join(",")
+        end
+
+      record_read_divergence!("stats_canonical", user.id, puzzle_num, detail, old_view, new_view)
+    rescue => e
+      warn "[games read compare] stats_canonical: #{e.class}: #{e.message} (user=#{user.id} puzzle=#{puzzle_num})"
+    end
+
+    def stats_canonical_view(row)
+      return {present: false, game_status: nil, guess_count: nil} unless row
+      raw_guesses = row.guesses
+      is_array = raw_guesses.is_a?(Array) || raw_guesses.is_a?(Sequel::Postgres::JSONArrayBase)
+      {present: true, game_status: row.game_status, guess_count: (is_array ? raw_guesses.length : nil)}
+    end
+
     # A short, bounded (see stats_adjustments:prune) audit trail of
     # statistics changes -- source distinguishes manual/automatic
     # adjustments from actual game completions, event_desc carries the
@@ -1452,7 +1604,14 @@ class LeftWordleApi < Sinatra::Base
       DB.transaction do
         profile = UserProfile.where(user_id: user.id).for_update.first || find_or_create_profile(user)
 
+        # Phase 3: both sides computed, compared, and only then is one
+        # chosen. This is the read that can move someone's numbers, so it
+        # gets the same evidence treatment as history before it is trusted.
         canonical = canonical_played_game_for(user, puzzle_num)
+        from_games = Game.first(user_id: user.id, puzzle_num: puzzle_num)
+        compare_stats_canonical_reads!(user, puzzle_num, canonical, from_games)
+        canonical = from_games if settings.read_games_enabled
+
         next :non_canonical unless canonical && canonical.game_status == game_status
 
         stats = profile.statistics || {}
