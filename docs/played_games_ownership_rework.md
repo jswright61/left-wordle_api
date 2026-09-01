@@ -4,10 +4,16 @@ Status: Phase 0 complete (api `e307916`). Phase 0.5 complete (api
 `d10004e`). Phase 1 complete: client minting (client `3c67a32`), api
 accept/store/return (api `2767b12`, migration 022), client send/adopt plus
 the completion replay (client `b1b6dd2`). Phase 2 complete (api `a4b3a4b`,
-migration 023): the `games` table, the dual-write, and the
-backfill/verify tasks. Deploy order still applies: the api must reach
-production before the client change ships, and `games:backfill` runs only
-after the dual-write is live. Phases 3–4 below are designed but not built.
+migration 023): the `games` table, the dual-write, and the backfill/verify
+tasks. Phase 3 **built, not yet soaked** (api `5db7abf`, migration 024, on
+branch `model-redesign/phase-3`): the dual-read comparison and the
+`read_games_enabled` flag, which defaults off. Phases 0 and 0.5 are in
+production as part of `v1.0.4`; phases 1–3 are not deployed. Phase 4 below
+is designed but not built.
+
+Phase 3's *code* being written is not Phase 3 being done — the phase is
+finished when the divergence log has been quiet on production traffic and
+the flag is on. See `phase_2_follow_up.md` and `phase_3_runbook.md`.
 
 This is a data-model change with an API-contract surface, so it lives in
 `api/docs/`, but it moves both repos: `CLAUDE.md`'s companion-repo rule
@@ -433,6 +439,36 @@ change and restart, not a deploy — that is the revert story for this phase.
 
 No client change; no contract change (response shapes are identical, which
 is exactly what the dual-read comparison proves).
+
+**As built** (api `5db7abf`, migration 024):
+
+- Divergences are recorded in a `games_read_divergences` table, not the
+  log. The soak's question is "have the two reads stopped disagreeing for
+  real traffic", which is a query; grepping journalctl across puma workers
+  is not, and rotation loses the history the decision rests on. One row per
+  disagreeing `(read_name, user_id, puzzle_num)`, bumped via `seen_count`
+  on repeat rather than duplicated, plus a per-read cap — a user reloading
+  history cannot bury the signal. `rake games:divergences` reports it,
+  `games:clear_divergences` resets it once a cause is understood.
+- **`game_id` is excluded from the history comparison, deliberately.** For a
+  user who played one puzzle on two devices, the canonical `played_games`
+  row may carry a different id than the `games` row, which keeps the first
+  id it ever saw. That difference is expected — it is what the response flip
+  below fixes — and counting it as divergence would bury the real signal.
+- The stats comparison looks only at what `next_statistics_for` actually
+  consumes: whether a row exists, its `game_status`, and its guess count.
+  Comparing more would manufacture divergences that cannot move a number.
+- With the flag on, the response `game_id` also comes from the `games` row
+  (the deferral recorded in `phase_2_follow_up.md` §4.5), so every device
+  converges on one id. This needs no client change: `_adoptGameId` has taken
+  the server's id as authoritative since Phase 1 — though note that until
+  now the server always echoed back the id the client sent, so adopting a
+  *different* one is a path this phase activates for the first time.
+- Comparison failures rescue and warn: diagnostics never take down the read
+  they observe.
+
+The full test suite passes unchanged with the flag off, which is the
+property that makes this safe to deploy ahead of any decision to flip it.
 
 ### Phase 4 — contract: drop user_id, delete canonicalization
 
