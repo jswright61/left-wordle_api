@@ -11,9 +11,16 @@ branch `model-redesign/phase-3`): the dual-read comparison and the
 production as part of `v1.0.4`; phases 1–3 are not deployed. Phase 4 below
 is designed but not built.
 
-Phase 3's *code* being written is not Phase 3 being done — the phase is
-finished when the divergence log has been quiet on production traffic and
-the flag is on. See `phase_2_follow_up.md` and `phase_3_runbook.md`.
+Phase 4 **built, not deployable yet** (branch `model-redesign/phase-4`,
+migrations 025–026): `played_games.user_id` and `game_id` dropped, an
+`authenticated` boolean added, and canonicalization deleted along with the
+Phase 3 comparison.
+
+Neither phase's *code* being written is that phase being done. Phase 3 ends
+when the divergence log has been quiet on production traffic and the flag is
+on; Phase 4 must not merge toward a release until that has happened and
+stayed true, because migration 025 cannot be undone by redeploying. See
+`phase_2_follow_up.md`, `phase_3_runbook.md`, and `phase_4_runbook.md`.
 
 This is a data-model change with an API-contract surface, so it lives in
 `api/docs/`, but it moves both repos: `CLAUDE.md`'s companion-repo rule
@@ -491,6 +498,35 @@ This is the one phase that is **not** independently revertible: dropping
 privacy win). Everything before it must be fully settled first. Client-side
 removals, if any contract fields disappear, deploy client-first per the
 sequencing rule below.
+
+**As built** (branch `model-redesign/phase-4`, migrations 025–026):
+
+- `authenticated` is **sticky across a day**: `played_games.authenticated OR
+  excluded.authenticated`, so a device signed in for any part of a day stays
+  marked for it. The flag describes the day, not whichever request landed
+  last.
+- **Imports stop writing telemetry entirely.** An import is a user telling
+  us about games they already played; `played_games` records play this
+  server observed. Reconstructing rows from an import would put entries with
+  no country, no `initiated_at`, and a merely-claimed device id into the
+  table analysis runs on — and after this phase they would be
+  indistinguishable from real play. The entry's `device_id` is no longer
+  read at all, which costs nothing: the client never sent one.
+- **`:non_canonical` survives, renamed `:status_mismatch`.** It no longer
+  asks "is this the winning row among several" — there is only ever one. It
+  asks "does the result being applied match what is recorded", which still
+  stops a replayed or duplicated completion from moving the numbers twice.
+  Nothing outside the api reads these symbols.
+- **Anonymous callers get `game_id: null`** instead of their own id echoed
+  back: there is no stored game to converge on, and echoing would imply a
+  persistence that does not exist. The client's `_adoptGameId` ignores null
+  and keeps the id it minted.
+- The `games:backfill` and `games:verify` tasks are deleted, not just
+  retired — both read `played_games.user_id`, so after 025 they are
+  impossible rather than merely unnecessary.
+- The two ownership tests are re-aimed rather than deleted: the same
+  takeover attacks now run against the `games` model, including one that
+  supplies the victim's `game_id` and still cannot reach their row.
 
 ## Release sequencing rules
 
