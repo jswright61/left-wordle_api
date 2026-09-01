@@ -362,6 +362,5 @@ load File.join(__dir__, "lib/tasks/storage_snapshots.rake")
 # never actually run.
 load File.join(__dir__, "lib/tasks/stats_adjustments.rake")
 load File.join(__dir__, "lib/tasks/cloudflare_cache_rules.rake")
-load File.join(__dir__, "lib/tasks/games.rake")
 
 task default: :test

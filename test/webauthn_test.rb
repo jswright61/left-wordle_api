@@ -358,7 +358,7 @@ class WebauthnTest < Minitest::Test
   end
 
   def test_local_storage_snapshot_requires_csrf
-    body = register_new_device!
+    register_new_device!
     post_json "/api/v2/profile/local_storage_snapshot", {event: "new user creation", local_storage: {}}
     assert_equal 403, last_response.status
   end
@@ -556,18 +556,19 @@ class WebauthnTest < Minitest::Test
   def test_history_import_response_reports_why_each_entry_did_or_did_not_move_stats
     body = register_new_device!
     csrf = body["csrf_token"]
-    device_a = SecureRandom.uuid
-    device_b = SecureRandom.uuid
-    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_a}], csrf)
+    import_history!([{puzzle_num: 500, date: "2026-01-01", game_status: "WIN", guesses: n_guesses(3)}], csrf)
 
     result = import_history!([
-      {puzzle_num: 501, date: "2026-01-02", game_status: "WIN", guesses: n_guesses(3), device_id: device_a}, # applied
-      {puzzle_num: 499, date: "2025-12-31", game_status: "WIN", guesses: n_guesses(2), device_id: device_a}, # archival: behind the anchor
-      {puzzle_num: 501, date: "2026-01-02", game_status: "FAIL", guesses: n_guesses(6), device_id: device_b} # non_canonical: loses to device_a's earlier-arriving WIN
+      {puzzle_num: 501, date: "2026-01-02", game_status: "WIN", guesses: n_guesses(3)},  # applied
+      {puzzle_num: 499, date: "2025-12-31", game_status: "WIN", guesses: n_guesses(2)},  # archival: behind the anchor
+      # status_mismatch: 501 is already recorded as a WIN, and keep-first means
+      # the stored game disagrees with the FAIL being applied. Was
+      # :non_canonical, when this described losing to another device's row.
+      {puzzle_num: 501, date: "2026-01-02", game_status: "FAIL", guesses: n_guesses(6)}
     ], csrf)
 
     assert_equal 1, result["stats_applied"]
-    assert_equal({"archival" => 1, "non_canonical" => 1}, result["stats_skip_reasons"])
+    assert_equal({"archival" => 1, "status_mismatch" => 1}, result["stats_skip_reasons"])
   end
 
   def test_fail_at_anchor_plus_one_resets_current_streak_but_keeps_max_streak
@@ -586,26 +587,34 @@ class WebauthnTest < Minitest::Test
     assert_equal 1, stats["guesses"]["fail"]
   end
 
-  def test_history_import_cannot_reassign_a_row_already_attached_to_another_user
-    device_id = SecureRandom.uuid
+  # Phases 0-0.5 defended played_games ownership with owned_row_scope, because
+  # a client-supplied device id was half that table's key. Phase 4 removes
+  # both the defence and the thing it defended: played_games has no owner, and
+  # a user's games are keyed (user_id, puzzle_num) off the session. These two
+  # tests are the same attacks re-aimed at the model that replaced it.
 
+  def test_one_account_cannot_reach_another_accounts_game_by_importing
     first_body = register_new_device!
-    import_history!([{puzzle_num: 800, date: "2026-04-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], first_body["csrf_token"])
+    import_history!([{puzzle_num: 800, date: "2026-04-01", game_status: "WIN", guesses: n_guesses(3)}], first_body["csrf_token"])
     owner_id = first_body["user_id"]
 
     with_second_device do
       second_body = register_new_device!
-      import_history!([{puzzle_num: 800, date: "2026-04-01", game_status: "FAIL", guesses: n_guesses(6), device_id: device_id}], second_body["csrf_token"])
+      # Same puzzle, opposite result. There is no device id or game id to
+      # aim with any more -- the upsert is keyed by the session's own user_id.
+      import_history!([{puzzle_num: 800, date: "2026-04-01", game_status: "FAIL", guesses: n_guesses(6)}], second_body["csrf_token"])
 
-      row = PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 1))
-      assert_equal owner_id, row.user_id, "an import must never re-assign a row already attached to another user"
-
-      history = json_get("/api/v2/history")
-      assert_nil history["800"], "the row must not surface in the second user's history"
+      assert_equal "FAIL", Game.first(user_id: second_body["user_id"], puzzle_num: 800).game_status,
+        "the second account gets its own game"
+      assert_equal "FAIL", json_get("/api/v2/history")["800"]["game_status"],
+        "and sees its own result in history, never the other account's"
     end
+
+    assert_equal "WIN", Game.first(user_id: owner_id, puzzle_num: 800).game_status,
+      "the first account's game is untouched"
   end
 
-  def test_live_play_cannot_take_over_another_users_row
+  def test_one_account_cannot_reach_another_accounts_game_by_playing
     device_id = SecureRandom.uuid
     date = "2026-04-03"
 
@@ -613,124 +622,63 @@ class WebauthnTest < Minitest::Test
     post_json "/api/v1/game/progress",
       {date: date, mode: "regular", guesses: [["crane", "01001"]]},
       {"HTTP_X_DEVICE_ID" => device_id}
-
-    row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
-    assert_equal owner["user_id"], row.user_id, "precondition: the row belongs to the first user"
+    owner_game = Game.first(user_id: owner["user_id"])
+    refute_nil owner_game, "precondition: the first account has a game"
 
     with_second_device do
-      register_new_device!
-      # Same device id and date, from a different authenticated account --
-      # the takeover attempt this scoping exists to stop.
+      second = register_new_device!
+      # Same device id, same date, different account. Under the old model
+      # this addressed the first user's row; now it cannot name it at all.
       post_json "/api/v1/game/progress",
-        {date: date, mode: "regular", guesses: [["stole", "22222"], ["plate", "11111"]]},
+        {date: date, mode: "regular", guesses: [["stole", "22222"], ["plate", "11111"]], game_id: owner_game.client_game_id},
         {"HTTP_X_DEVICE_ID" => device_id}
 
-      row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
-      assert_equal owner["user_id"], row.user_id, "a second user must never take ownership of an existing row"
-      assert_equal 1, row.guesses.length, "the other user's guesses must not be overwritten either"
-
-      history = json_get("/api/v2/history")
-      assert_empty history, "the row must not surface in the second user's history"
+      assert_equal 1, Game.where(user_id: owner["user_id"]).count
+      assert_equal 1, Game.first(user_id: owner["user_id"]).guesses.length,
+        "the other account's board must be untouched even when its game id is supplied"
+      assert_equal 2, Game.first(user_id: second["user_id"]).guesses.length,
+        "the second account gets its own game instead"
     end
   ensure
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  # Phase 0.5 (docs/played_games_ownership_rework.md): anonymous updates are
-  # scoped to unclaimed rows. Anyone can send a claimed row's device id and
-  # date without a session, so an anonymous "completion" used to poison the
-  # canonical row and bounce the owner's real win as :non_canonical.
-  def test_anonymous_play_cannot_alter_a_row_attached_to_a_user
+  # Telemetry is shared by device now, with no owner to protect: two accounts
+  # playing on one device write one played_games row per day between them.
+  # That is the intended shape -- it records that the device played, not who.
+  def test_telemetry_is_shared_by_device_and_records_only_that_it_was_signed_in
     device_id = SecureRandom.uuid
     date = "2026-04-04"
-
-    owner = register_new_device!
-    post_json "/api/v1/game/progress",
-      {date: date, mode: "regular", guesses: [["crane", "01001"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-
-    with_second_device do
-      post_json "/api/v1/game/complete",
-        {date: date, mode: "regular", game_status: "FAIL", guesses: n_guesses(6)},
-        {"HTTP_X_DEVICE_ID" => device_id}
-    end
-
-    row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
-    assert_equal owner["user_id"], row.user_id, "the row must stay attached to its owner"
-    assert_nil row.game_status, "an anonymous write must not set game_status on a claimed row"
-    assert_equal 1, row.guesses.length, "an anonymous write must not overwrite a claimed row's guesses"
-
-    # And the owner's real completion still counts -- the poison this
-    # scoping exists to prevent.
-    post_json "/api/v1/game/complete",
-      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    assert_equal 1, get_profile!["statistics"]["gamesWon"]
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  def test_anonymous_play_still_updates_its_own_unclaimed_row
-    device_id = SecureRandom.uuid
-    date = "2026-04-04"
-
-    with_second_device do
-      post_json "/api/v1/game/progress",
-        {date: date, mode: "regular", guesses: [["crane", "01001"]]},
-        {"HTTP_X_DEVICE_ID" => device_id}
-      post_json "/api/v1/game/complete",
-        {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
-        {"HTTP_X_DEVICE_ID" => device_id}
-    end
-
-    row = PlayedGame.first(client_device_id: device_id, date: Date.parse(date))
-    assert_equal "WIN", row.game_status, "anonymous telemetry must keep flowing to unclaimed rows"
-    assert_equal 2, row.guesses.length
-    assert_nil row.user_id
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  # Phase 0.5's canonical-prefers-completed rule: start on one device, finish
-  # on another. The first device's never-finished row used to be canonical
-  # (earliest arrival), so the second device's WIN bounced as :non_canonical
-  # and was lost forever.
-  def test_win_on_second_device_counts_when_first_device_left_the_game_unfinished
-    device_a = SecureRandom.uuid
-    device_b = SecureRandom.uuid
-    date = "2026-04-05"
 
     register_new_device!
     post_json "/api/v1/game/progress",
       {date: date, mode: "regular", guesses: [["crane", "01001"]]},
-      {"HTTP_X_DEVICE_ID" => device_a}
-    post_json "/api/v1/game/complete",
-      {date: date, mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
-      {"HTTP_X_DEVICE_ID" => device_b}
+      {"HTTP_X_DEVICE_ID" => device_id}
 
-    stats = get_profile!["statistics"]
-    assert_equal 1, stats["gamesWon"], "the phone's win must count despite the desktop's unfinished row arriving first"
-    assert_equal 1, stats["currentStreak"]
-
-    puzzle_num = PlayedGame.first(client_device_id: device_b, date: Date.parse(date)).puzzle_num
-    history = json_get("/api/v2/history")
-    assert_equal "WIN", history[puzzle_num.to_s]["game_status"], "history must surface the completed row, not the abandoned one"
+    rows = PlayedGame.where(client_device_id: device_id, date: Date.parse(date)).all
+    assert_equal 1, rows.length
+    assert rows.first.authenticated, "a signed-in session marks the day authenticated"
+    refute rows.first.respond_to?(:user_id), "played_games no longer carries a user_id at all"
   ensure
-    [device_a, device_b].compact.each { |d| DB[:played_games].where(client_device_id: d).delete }
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  def test_history_import_attaches_a_previously_anonymous_row
+  def test_anonymous_telemetry_still_flows
     device_id = SecureRandom.uuid
-    DB[:played_games].insert(
-      client_device_id: device_id, date: Date.new(2026, 4, 2), puzzle_num: 801,
-      updated_at: Sequel::CURRENT_TIMESTAMP
-    )
 
-    body = register_new_device!
-    import_history!([{puzzle_num: 801, date: "2026-04-02", game_status: "WIN", guesses: n_guesses(4), device_id: device_id}], body["csrf_token"])
+    with_second_device do
+      post_json "/api/v1/game/progress",
+        {date: "2026-04-05", mode: "regular", guesses: [["crane", "01001"]]},
+        {"HTTP_X_DEVICE_ID" => device_id}
+      post_json "/api/v1/game/complete",
+        {date: "2026-04-05", mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]]},
+        {"HTTP_X_DEVICE_ID" => device_id}
+    end
 
-    row = PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 2))
-    assert_equal body["user_id"], row.user_id, "an import should claim the importer's own anonymous pre-account rows"
+    row = PlayedGame.first(client_device_id: device_id)
+    assert_equal "WIN", row.game_status
+    assert_equal 2, row.guesses.length
+    refute row.authenticated
   ensure
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
@@ -745,10 +693,8 @@ class WebauthnTest < Minitest::Test
 
     import_history!([{puzzle_num: 810, date: "2026-04-06", game_status: "WIN", guesses: n_guesses(3), device_id: device_id, game_id: game_id}], body["csrf_token"])
 
-    assert_equal game_id, PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 6)).game_id
+    assert_equal game_id, Game.first(user_id: body["user_id"], puzzle_num: 810).client_game_id
     assert_equal game_id, json_get("/api/v2/history")["810"]["game_id"]
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
   def test_history_reimport_keeps_the_first_game_id
@@ -760,31 +706,30 @@ class WebauthnTest < Minitest::Test
     import_history!([entry.merge(game_id: first_id)], body["csrf_token"])
     import_history!([entry.merge(game_id: SecureRandom.uuid)], body["csrf_token"])
 
-    assert_equal first_id, PlayedGame.first(client_device_id: device_id, date: Date.new(2026, 4, 7)).game_id
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
+    assert_equal first_id, Game.first(user_id: body["user_id"], puzzle_num: 811).client_game_id
   end
 
-  def test_multi_device_same_puzzle_first_arrival_wins_and_loser_is_preserved
+  # Was: "first arrival wins and the losing row is preserved" -- the
+  # canonicalization rule that existed because two devices produced two rows.
+  # There is one row now, so the question is not which of several wins but
+  # that a second import cannot rewrite a recorded result.
+  def test_a_second_import_of_the_same_puzzle_cannot_rewrite_the_result
     body = register_new_device!
     csrf = body["csrf_token"]
-    device_a = SecureRandom.uuid
-    device_b = SecureRandom.uuid
 
-    import_history!([{puzzle_num: 700, date: "2026-03-01", game_status: "WIN", guesses: n_guesses(3), device_id: device_a}], csrf)
-    import_history!([{puzzle_num: 700, date: "2026-03-01", game_status: "FAIL", guesses: n_guesses(6), device_id: device_b}], csrf)
+    import_history!([{puzzle_num: 700, date: "2026-03-01", game_status: "WIN", guesses: n_guesses(3)}], csrf)
+    result = import_history!([{puzzle_num: 700, date: "2026-03-01", game_status: "FAIL", guesses: n_guesses(6)}], csrf)
 
     stats = get_profile!["statistics"]
-    assert_equal 1, stats["gamesPlayed"], "only the canonical (first-arrival) row should count"
+    assert_equal 1, stats["gamesPlayed"], "the puzzle counts once"
     assert_equal 1, stats["gamesWon"]
     assert_equal 1, stats["currentStreak"]
 
-    history = json_get("/api/v2/history")
-    assert_equal "WIN", history["700"]["game_status"], "history should surface the first-arriving (canonical) row"
-
-    rows = PlayedGame.where(user_id: body["user_id"], puzzle_num: 700).all
-    assert_equal 2, rows.length, "the losing device's row must be preserved, not discarded"
-    assert(rows.any? { |r| r.client_device_id == device_b && r.game_status == "FAIL" })
+    assert_equal "WIN", json_get("/api/v2/history")["700"]["game_status"],
+      "keep-first: a re-import cannot flip a recorded result"
+    assert_equal 1, Game.where(user_id: body["user_id"], puzzle_num: 700).count
+    assert_equal({"status_mismatch" => 1}, result["stats_skip_reasons"],
+      "and the response explains why the second entry moved nothing")
   end
 
   # -- games dual-write (Phase 2 of docs/played_games_ownership_rework.md) --
@@ -840,8 +785,8 @@ class WebauthnTest < Minitest::Test
     assert_equal 1, games.length, "one user playing one puzzle must be one game, whatever the device count"
     assert_equal "WIN", games.first.game_status
     assert_equal first_id, games.first.client_game_id, "first id wins, so the client converges on a stable value"
-    assert_equal 2, PlayedGame.where(user_id: body["user_id"], puzzle_num: games.first.puzzle_num).count,
-      "played_games still keeps both device rows -- only games collapses them"
+    assert_equal 2, PlayedGame.where(client_device_id: [device_a, device_b]).count,
+      "telemetry still records both devices' days -- only games collapses them into one game"
   ensure
     [device_a, device_b].compact.each { |d| DB[:played_games].where(client_device_id: d).delete }
   end
@@ -916,195 +861,19 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  def test_an_import_aimed_at_another_users_row_writes_no_game
-    device_id = SecureRandom.uuid
+  def test_an_import_only_ever_writes_the_callers_own_game
     first_body = register_new_device!
-    import_history!([{puzzle_num: 900, date: "2026-05-07", game_status: "WIN", guesses: n_guesses(3), device_id: device_id}], first_body["csrf_token"])
+    import_history!([{puzzle_num: 900, date: "2026-05-07", game_status: "WIN", guesses: n_guesses(3)}], first_body["csrf_token"])
 
     with_second_device do
       second_body = register_new_device!
-      import_history!([{puzzle_num: 900, date: "2026-05-07", game_status: "FAIL", guesses: n_guesses(6), device_id: device_id}], second_body["csrf_token"])
-
-      assert_equal 0, Game.where(user_id: second_body["user_id"]).count,
-        "the dual-write sits behind owned_row_scope, so a refused import creates no game either"
+      import_history!([{puzzle_num: 900, date: "2026-05-07", game_status: "FAIL", guesses: n_guesses(6)}], second_body["csrf_token"])
+      assert_equal 1, Game.where(user_id: second_body["user_id"]).count
+      assert_equal "FAIL", Game.first(user_id: second_body["user_id"], puzzle_num: 900).game_status
     end
 
-    assert_equal "WIN", Game.first(user_id: first_body["user_id"], puzzle_num: 900).game_status
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  # -- Phase 3 dual-read (docs/played_games_ownership_rework.md) ------------
-  #
-  # With the flag off every read is computed both ways and compared but the
-  # played_games answer is still served; with it on the games answer is
-  # served. Divergences are recorded rather than logged so the soak's
-  # go/no-go is a query.
-
-  def test_agreeing_reads_record_no_divergence
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/complete",
-      {date: "2026-06-01", mode: "regular", game_status: "WIN", guesses: [["crane", "01001"], ["stole", "22222"]], game_id: SecureRandom.uuid},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    json_get("/api/v2/history")
-
-    assert_equal 0, GamesReadDivergence.where(user_id: body["user_id"]).count,
-      "the tables agree, so the soak signal must stay clean"
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  def test_history_divergence_is_recorded_with_both_sides
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/complete",
-      {date: "2026-06-02", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-
-    # Force disagreement the only way that matters: make the games row say
-    # something the played_games row does not.
-    Game.where(user_id: body["user_id"]).update(game_status: "FAIL")
-    json_get("/api/v2/history")
-
-    row = GamesReadDivergence.first(user_id: body["user_id"], read_name: "history")
-    refute_nil row, "a disagreeing history read must be recorded"
-    assert_includes row.detail, "game_status"
-    assert_equal "WIN", row.played_games_value["game_status"]
-    assert_equal "FAIL", row.games_value["game_status"]
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  def test_repeat_reads_bump_the_same_divergence_rather_than_multiplying_rows
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/complete",
-      {date: "2026-06-03", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    Game.where(user_id: body["user_id"]).update(game_status: "FAIL")
-
-    3.times { json_get("/api/v2/history") }
-
-    rows = GamesReadDivergence.where(user_id: body["user_id"], read_name: "history").all
-    assert_equal 1, rows.length, "one row per disagreeing (read, user, puzzle), however often it is read"
-    assert_equal 3, rows.first.seen_count
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  # The one difference that is expected rather than alarming: a multi-device
-  # user's played_games canonical row can carry a different id than the games
-  # row, which keeps the first id it ever saw. Counting that as divergence
-  # would bury the signal the soak depends on.
-  def test_a_differing_game_id_alone_is_not_treated_as_divergence
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/complete",
-      {date: "2026-06-04", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]], game_id: SecureRandom.uuid},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    Game.where(user_id: body["user_id"]).update(client_game_id: SecureRandom.uuid)
-
-    json_get("/api/v2/history")
-
-    assert_equal 0, GamesReadDivergence.where(user_id: body["user_id"]).count
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  def test_the_flag_decides_which_history_is_served
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/complete",
-      {date: "2026-06-05", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    puzzle_num = Game.first(user_id: body["user_id"]).puzzle_num
-    Game.where(user_id: body["user_id"]).update(game_status: "FAIL")
-
-    assert_equal "WIN", json_get("/api/v2/history")[puzzle_num.to_s]["game_status"],
-      "flag off must still serve the played_games answer"
-
-    with_games_reads do
-      assert_equal "FAIL", json_get("/api/v2/history")[puzzle_num.to_s]["game_status"],
-        "flag on must serve the games answer"
-    end
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  def test_with_the_flag_on_the_response_id_comes_from_games
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-    played_games_id = SecureRandom.uuid
-    games_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/progress",
-      {date: "2026-06-06", mode: "regular", guesses: [["crane", "01001"]], game_id: played_games_id},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    Game.where(user_id: body["user_id"]).update(client_game_id: games_id)
-
-    post_json "/api/v1/game/progress",
-      {date: "2026-06-06", mode: "regular", guesses: [["crane", "01001"], ["stole", "11111"]], game_id: played_games_id},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    assert_equal played_games_id, json_response["game_id"], "flag off keeps the played_games id"
-
-    with_games_reads do
-      post_json "/api/v1/game/progress",
-        {date: "2026-06-06", mode: "regular", guesses: [["crane", "01001"]], game_id: played_games_id},
-        {"HTTP_X_DEVICE_ID" => device_id}
-      assert_equal games_id, json_response["game_id"],
-        "flag on returns the games row's id, so every device converges on one value"
-    end
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  def test_anonymous_play_keeps_the_played_games_id_even_with_the_flag_on
-    device_id = SecureRandom.uuid
-    game_id = SecureRandom.uuid
-
-    with_games_reads do
-      with_second_device do
-        post_json "/api/v1/game/complete",
-          {date: "2026-06-07", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]], game_id: game_id},
-          {"HTTP_X_DEVICE_ID" => device_id}
-        assert_equal game_id, json_response["game_id"], "an anonymous caller has no games row to converge on"
-      end
-    end
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
-  end
-
-  # A divergence that can really happen rather than one staged by deleting a
-  # row: played_games overwrites guesses unconditionally, while games keeps
-  # the longest array it has seen. A completion carrying fewer guesses than
-  # the progress before it — an out-of-order arrival — leaves the two sides
-  # disagreeing about the guess count, which is what picks the histogram
-  # bucket. Deleting the games row first would prove nothing, since the
-  # dual-write recreates it before the stats read happens.
-  def test_a_stats_canonical_divergence_is_recorded
-    body = register_new_device!
-    device_id = SecureRandom.uuid
-
-    post_json "/api/v1/game/progress",
-      {date: "2026-06-08", mode: "regular", guesses: [["crane", "01001"], ["stole", "11111"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-    post_json "/api/v1/game/complete",
-      {date: "2026-06-08", mode: "regular", game_status: "WIN", guesses: [["stole", "22222"]]},
-      {"HTTP_X_DEVICE_ID" => device_id}
-
-    row = GamesReadDivergence.first(user_id: body["user_id"], read_name: "stats_canonical")
-    refute_nil row, "a disagreeing stats-canonical read must be recorded"
-    assert_equal "guess_count", row.detail
-    assert_equal 1, row.played_games_value["guess_count"]
-    assert_equal 2, row.games_value["guess_count"]
-  ensure
-    DB[:played_games].where(client_device_id: device_id).delete if device_id
+    assert_equal "WIN", Game.first(user_id: first_body["user_id"], puzzle_num: 900).game_status,
+      "the session decides whose game an import writes; there is no id to aim elsewhere"
   end
 
   private
@@ -1170,16 +939,6 @@ class WebauthnTest < Minitest::Test
       header "Authorization", "Bearer 1234"
       block.call
     end
-  end
-
-  # Phase 3's per-deployment read flag (config/app_config.yml's
-  # read_games_enabled). Off by default everywhere, including here, so the
-  # rest of the suite proves the dual-read comparison changes nothing.
-  def with_games_reads(&block)
-    LeftWordleApi.set :read_games_enabled, true
-    block.call
-  ensure
-    LeftWordleApi.set :read_games_enabled, false
   end
 
   def add_second_passkey!(csrf_token, nickname: "Second")

@@ -59,20 +59,3 @@ device_link_token_ttl_minutes: 15
 # cookies (HMAC-SHA256). Required in production -- the app refuses to boot
 # without it. Generate with: ruby -rsecurerandom -e "puts SecureRandom.hex(32)"
 session_secret: your_random_secret_here
-
-# --- Ownership rework, Phase 3 (docs/played_games_ownership_rework.md) ---
-#
-# Where a logged-in user's history and stats-canonical row are read from.
-#
-#   false (default) -- read played_games, exactly as before. Every such read
-#                      is still computed BOTH ways and compared, and any
-#                      disagreement is recorded in games_read_divergences.
-#                      This is the soak: it changes no behavior, it only
-#                      collects evidence.
-#   true            -- read the games table, and return its client_game_id
-#                      as the response game_id.
-#
-# Flip to true only once games_read_divergences has been quiet for real
-# production traffic (rake games:divergences). Flipping back is a config
-# edit and a puma restart, not a deploy -- that is this phase's revert.
-# read_games_enabled: false

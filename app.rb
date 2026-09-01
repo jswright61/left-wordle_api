@@ -11,7 +11,6 @@ require_relative "lib/models/answer"
 require_relative "lib/models/legal_word"
 require_relative "lib/models/played_game"
 require_relative "lib/models/game"
-require_relative "lib/models/games_read_divergence"
 require_relative "lib/models/user"
 require_relative "lib/models/passkey_credential"
 require_relative "lib/models/session"
@@ -50,12 +49,6 @@ class LeftWordleApi < Sinatra::Base
   RATE_LIMIT_WINDOW_SECONDS = 60
   RATE_LIMIT_MAX_REQUESTS = 20
   RATE_LIMIT_MUTEX = Mutex.new
-  # Phase 3 dual-read comparison (see compare_history_reads!).
-  HISTORY_COMPARED_FIELDS = %i[puzzle_num date mode game_status guesses completed_at].freeze
-  # One user with a badly broken history should not be able to write a row
-  # per puzzle on every request. The unique index collapses repeats, but this
-  # bounds the work inside a single read too.
-  MAX_DIVERGENCES_PER_READ = 10
   RATE_LIMIT_BUCKETS = {}
 
   set :root, File.expand_path(__dir__)
@@ -74,12 +67,6 @@ class LeftWordleApi < Sinatra::Base
     set :session_token_ttl_days, (app_cfg["session_token_ttl_days"] || 365).to_i
     set :device_link_token_ttl_minutes, (app_cfg["device_link_token_ttl_minutes"] || 15).to_i
     set :webauthn_origin, app_cfg["webauthn_origin"]
-    # Phase 3 of docs/played_games_ownership_rework.md. Off means "read
-    # played_games as before, but compute the games answer too and record any
-    # disagreement"; on means "read games". Per-deployment, so staging can
-    # run flipped while production is still collecting evidence, and the
-    # revert is a config edit plus a restart rather than a deploy.
-    set :read_games_enabled, app_cfg["read_games_enabled"] == true
     set :logging, false
     set :protection, except: :json_csrf
     set :show_exceptions, false
@@ -663,15 +650,12 @@ class LeftWordleApi < Sinatra::Base
       raw_game_id if valid_uuid?(raw_game_id)
     end
 
-    # Which id the client is told to converge on (Phase 3 of
-    # docs/played_games_ownership_rework.md). played_games is keyed by
-    # device, so a user playing one puzzle on two devices has two rows and
-    # two ids, and which one this returned depended on which device asked.
-    # The games row is keyed (user_id, puzzle_num) and keeps the first id it
-    # ever saw, so with the flag on every device converges on the same value.
-    # Anonymous callers have no games row and keep the played_games id.
+    # Which id the client is told to converge on. The games row keeps the
+    # first id it ever saw, so every device a user plays a puzzle on ends up
+    # agreeing on one value. An anonymous caller has no games row, so it just
+    # keeps whatever it sent -- there is nothing for it to converge with.
     def response_game_id(stored_game_id, user_id, puzzle_number)
-      return stored_game_id unless settings.read_games_enabled && user_id
+      return stored_game_id unless user_id
       Game.where(user_id: user_id, puzzle_num: puzzle_number).get(:client_game_id) || stored_game_id
     end
 
@@ -680,38 +664,25 @@ class LeftWordleApi < Sinatra::Base
       country_code if country_code.is_a?(String) && country_code.match?(/\A[A-Za-z]{2}\z/)
     end
 
-    # Phase 0 of the played_games ownership rework: client_device_id arrives
-    # from the client -- the X-Device-ID header, or an import row's device_id
-    # field -- and it is half of this table's unique key, so *any* caller who
-    # knows a device id can address someone else's row. Until identity moves
-    # off the device id entirely, every authenticated write is scoped here to
-    # a row that is either unclaimed or already the caller's. A row belonging
-    # to a different user matches no ON CONFLICT DO UPDATE ... WHERE, so the
-    # write is dropped rather than applied: no ownership takeover, and no
-    # tampering with the other columns either.
+    # owned_row_scope lived here through Phases 0-3. It scoped every
+    # played_games write to a row that was unclaimed or already the caller's,
+    # because client_device_id is client-supplied and was half the table's
+    # unique key -- so any caller who knew a device id could address someone
+    # else's row.
     #
-    # Anonymous writes are scoped too (Phase 0.5): an update may only touch
-    # an unclaimed row. Unscoped anonymous updates let anyone knowing a
-    # device id overwrite guesses/mode and set game_status on a claimed row
-    # -- poisoning the canonical row so the owner's real completion bounced
-    # as :non_canonical. The cost is the session-expires-mid-game flow: a
-    # device that drops offline mid-game keeps firing anonymous progress at
-    # its now-claimed row, and those beats are now dropped instead of
-    # landing (they never applied statistics anyway -- see
-    # docs/played_games_ownership_rework.md, whose completion-replay design
-    # is the real fix for that game reaching the account).
-    def owned_row_scope(user_id)
-      owned = {Sequel[:played_games][:user_id] => nil}
-      owned = Sequel.|(owned, {Sequel[:played_games][:user_id] => user_id}) if user_id
-      {update_where: owned}
-    end
+    # Phase 4 deletes it rather than fixing it further: played_games no
+    # longer has a user_id, so there is no ownership on it to take over. A
+    # forged telemetry row is now a data-quality problem, not a security one
+    # (see the design doc's decision on anonymous sessions). Everything that
+    # belongs to an account lives in `games`, where the session decides
+    # ownership and UNIQUE (user_id, puzzle_num) scopes every write to the
+    # caller's own data by construction.
 
-    # -- games dual-write (Phase 2, docs/played_games_ownership_rework.md) ---
+    # -- games writes (docs/played_games_ownership_rework.md) ----------------
     #
-    # Every authenticated write to played_games is mirrored here into the
-    # user-owned games table. Nothing reads games yet -- Phase 3 moves reads
-    # over, after comparing the two in production -- so this exists purely to
-    # accumulate a correct table alongside the old one.
+    # Where a logged-in player's games live, full stop. This started life in
+    # Phase 2 as a mirror of played_games; since Phase 4 there is nothing to
+    # mirror -- played_games is anonymous telemetry and this is the record.
     #
     # Keyed (user_id, puzzle_num), so the multi-device case that produced two
     # played_games rows produces one row here: the second device's write
@@ -753,7 +724,7 @@ class LeftWordleApi < Sinatra::Base
           ),
           updated_at: Sequel::CURRENT_TIMESTAMP
         }
-      ).insert(
+      ).returning(:client_game_id).insert(
         # A request without a game_id (an older client) still needs one --
         # client_game_id is NOT NULL, and dedup/ordering depend on it.
         client_game_id: client_game_id || Sequel.function(:uuidv7),
@@ -761,24 +732,27 @@ class LeftWordleApi < Sinatra::Base
         mode: mode, game_status: game_status,
         guesses: (guesses ? Sequel.pg_jsonb(guesses) : nil),
         completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP
-      )
+      ).then { |written| written&.dig(0, :client_game_id) }
     rescue Sequel::DatabaseError => e
-      # Never let the new table break the old path: gameplay still succeeds
-      # on played_games alone. Logged rather than swallowed because Phase 3's
-      # go/no-go is "do the two tables agree", and a silent dual-write
-      # failure is exactly what would make that comparison lie.
-      warn "[games dual-write] #{e.class}: #{e.message} (user=#{user_id} puzzle=#{puzzle_number})"
+      # This is now the authoritative write for a logged-in player, not a
+      # mirror, so a failure here means their game was not recorded. It still
+      # must not take the request down -- gameplay is client-side and the
+      # telemetry row already landed -- but it is the loudest thing in this
+      # file for a reason.
+      warn "[games write FAILED] #{e.class}: #{e.message} (user=#{user_id} puzzle=#{puzzle_number})"
       nil
     end
 
-    # game_id (here and in record_game_event!) is the client-minted UUIDv7
-    # from the ownership rework's Phase 1 (docs/played_games_ownership_rework.md):
-    # stored keep-first -- coalesce(existing, excluded) -- so the first id a
-    # row sees wins, and RETURNING hands the winning id back so the response
-    # can tell the client which id to converge on. Identity, dedup and
-    # ordering only; it participates in no key and no authorization decision.
+    # Two writes per authenticated request from here on: the played_games row
+    # is anonymous telemetry about a device's day, and the games row is the
+    # user's game. They no longer share a key, an id, or an owner -- only the
+    # fact that one request produced both.
+    #
+    # `authenticated` is the only trace of the session left on the telemetry
+    # row: enough to ask whether account holders play differently, not enough
+    # to say who they are.
     def record_game_initiation!(client_device_id, country_code, date, puzzle_number, user_id = nil, game_id = nil)
-      written = DB[:played_games].insert_conflict(
+      DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
@@ -789,22 +763,17 @@ class LeftWordleApi < Sinatra::Base
             Sequel[:excluded][:initiated_at]
           ),
           country_code: Sequel.function(:coalesce, Sequel[:played_games][:country_code], Sequel[:excluded][:country_code]),
-          # A device's rows attach to a user once it has an active session,
-          # and never get un-attached by a later anonymous request. This
-          # coalesce guards the anonymous case only -- cross-*user* takeover
-          # is prevented by owned_row_scope, not here.
-          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id]),
-          game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
-        },
-        **owned_row_scope(user_id)
-      ).returning(:game_id).insert(
+          # Sticky: a device that was signed in for any part of a day stays
+          # marked for that day, so the flag describes the day rather than
+          # whichever request happened to land last.
+          authenticated: Sequel.lit("played_games.authenticated OR excluded.authenticated")
+        }
+      ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
-        country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP, updated_at: Sequel::CURRENT_TIMESTAMP,
-        user_id: user_id, game_id: game_id
+        country_code: country_code, initiated_at: Sequel::CURRENT_TIMESTAMP,
+        updated_at: Sequel::CURRENT_TIMESTAMP, authenticated: !user_id.nil?
       )
-      stored_game_id = written&.dig(0, :game_id)
-      upsert_game!(user_id, stored_game_id || game_id, date, puzzle_number)
-      stored_game_id
+      upsert_game!(user_id, game_id, date, puzzle_number)
     rescue Sequel::DatabaseError
       nil
     end
@@ -819,7 +788,7 @@ class LeftWordleApi < Sinatra::Base
     # (`completed:` true) and, like the other fields, coalesced so it's
     # never clobbered back to nil by a later progress write.
     def record_game_event!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id, game_id, completed:)
-      written = DB[:played_games].insert_conflict(
+      DB[:played_games].insert_conflict(
         target: [:client_device_id, :date],
         update: {
           puzzle_num: Sequel[:excluded][:puzzle_num],
@@ -828,27 +797,19 @@ class LeftWordleApi < Sinatra::Base
           guesses: Sequel[:excluded][:guesses],
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
           country_code: Sequel.function(:coalesce, Sequel[:excluded][:country_code], Sequel[:played_games][:country_code]),
-          user_id: Sequel.function(:coalesce, Sequel[:excluded][:user_id], Sequel[:played_games][:user_id]),
-          game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
-        },
-        **owned_row_scope(user_id)
-      ).returning(:game_id).insert(
+          authenticated: Sequel.lit("played_games.authenticated OR excluded.authenticated")
+        }
+      ).insert(
         client_device_id: client_device_id, date: date, puzzle_num: puzzle_number,
         mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
         country_code: country_code, completed_at: (completed ? Sequel::CURRENT_TIMESTAMP : nil),
-        updated_at: Sequel::CURRENT_TIMESTAMP, user_id: user_id, game_id: game_id
+        updated_at: Sequel::CURRENT_TIMESTAMP, authenticated: !user_id.nil?
       )
-      stored_game_id = written&.dig(0, :game_id)
       upsert_game!(
-        user_id, stored_game_id || game_id, date, puzzle_number,
+        user_id, game_id, date, puzzle_number,
         mode: mode, game_status: game_status, guesses: guesses,
-        # The played_games row uses CURRENT_TIMESTAMP for this; reading the
-        # clock again here would differ by microseconds, which is noise the
-        # Phase 3 comparison would have to explain away. Take the value the
-        # row actually got.
         completed_at: (completed ? Sequel::CURRENT_TIMESTAMP : nil)
       )
-      stored_game_id
     end
 
     def record_game_completion!(client_device_id, country_code, date, puzzle_number, mode, game_status, guesses, user_id = nil, game_id = nil)
@@ -1274,21 +1235,14 @@ class LeftWordleApi < Sinatra::Base
 
     def history_get_response
       user = require_authenticated_user!
-      # Same order as canonical_played_game_for, so history surfaces the
-      # same row per puzzle that statistics counted.
-      rows = PlayedGame.where(user_id: user.id)
-        .order(Sequel.expr(game_status: nil), :created_at, :id).all
-      from_played_games = history_hash_for(rows)
-      from_games = history_hash_from_games(user)
-
-      compare_history_reads!(user, from_played_games, from_games)
-      json_response(settings.read_games_enabled ? from_games : from_played_games)
+      json_response(history_hash_from_games(user))
     end
 
-    # The Phase 3 replacement for history_hash_for: no collapse, because
-    # UNIQUE (user_id, puzzle_num) already guarantees one row per puzzle.
-    # Ordered by puzzle_num purely for stable output; the hash is keyed, so
-    # order carries no meaning to the client.
+    # One row per puzzle by construction -- UNIQUE (user_id, puzzle_num) --
+    # so there is nothing to collapse. Reads here used to fold several
+    # per-device rows down to a canonical one; that whole idea died with the
+    # per-device key. Ordered by puzzle_num for stable output only; the hash
+    # is keyed, so order carries no meaning to the client.
     def history_hash_from_games(user)
       Game.where(user_id: user.id).order(:puzzle_num).each_with_object({}) do |row, hash|
         hash[row.puzzle_num.to_s] = {
@@ -1299,102 +1253,6 @@ class LeftWordleApi < Sinatra::Base
           guesses: row.guesses,
           completed_at: row.completed_at&.iso8601,
           game_id: row.client_game_id
-        }
-      end
-    end
-
-    # -- Phase 3 dual-read comparison ---------------------------------------
-    #
-    # Every read that Phase 3 moves to `games` is computed both ways on every
-    # request and the answers compared. Disagreements are recorded in
-    # games_read_divergences; agreement writes nothing. Until
-    # read_games_enabled is on, the played_games answer is still the one
-    # served, so this collects evidence without changing behavior -- which is
-    # the whole point, given app.rb's stats history (a prior
-    # recompute-from-history approach caused real data loss).
-    #
-    # game_id is deliberately NOT compared. For a user who played one puzzle
-    # on two devices, played_games has two rows and its canonical one may
-    # carry a different id than the games row, which keeps the first id it
-    # ever saw. That difference is expected and is exactly what flipping the
-    # response id fixes -- counting it as divergence would bury the signal
-    # the soak actually depends on.
-    def compare_history_reads!(user, from_played_games, from_games)
-      recorded = 0
-      (from_played_games.keys | from_games.keys).sort.each do |key|
-        break if recorded >= MAX_DIVERGENCES_PER_READ
-        old_row = from_played_games[key]
-        new_row = from_games[key]
-
-        detail =
-          if new_row.nil? then "missing_in_games"
-          elsif old_row.nil? then "missing_in_played_games"
-          else
-            differing = HISTORY_COMPARED_FIELDS.reject do |field|
-              comparable_value(old_row[field]) == comparable_value(new_row[field])
-            end
-            differing.any? ? differing.join(",") : nil
-          end
-        next unless detail
-
-        record_read_divergence!("history", user.id, key.to_i, detail, old_row, new_row)
-        recorded += 1
-      end
-    rescue => e
-      # Diagnostics must never take down the read they are observing.
-      warn "[games read compare] history: #{e.class}: #{e.message} (user=#{user.id})"
-    end
-
-    # Sequel's pg_json wrappers and Date/Time objects don't compare cleanly
-    # across the two reads, so normalize through plain JSON-ish values.
-    def comparable_value(value)
-      case value
-      when Sequel::Postgres::JSONArrayBase then value.to_a.map { |v| comparable_value(v) }
-      when Sequel::Postgres::JSONHashBase then value.to_h
-      when Array then value.map { |v| comparable_value(v) }
-      else value
-      end
-    end
-
-    def record_read_divergence!(read_name, user_id, puzzle_num, detail, played_games_value, games_value)
-      DB[:games_read_divergences].insert_conflict(
-        target: [:read_name, :user_id, :puzzle_num],
-        update: {
-          seen_count: Sequel.lit("games_read_divergences.seen_count + 1"),
-          last_seen_at: Sequel::CURRENT_TIMESTAMP,
-          # Keep the newest reading of what each side said: if the
-          # disagreement changes shape, the latest is the one worth chasing.
-          detail: Sequel[:excluded][:detail],
-          played_games_value: Sequel[:excluded][:played_games_value],
-          games_value: Sequel[:excluded][:games_value]
-        }
-      ).insert(
-        read_name: read_name, user_id: user_id, puzzle_num: puzzle_num, detail: detail,
-        played_games_value: Sequel.pg_jsonb(played_games_value),
-        games_value: Sequel.pg_jsonb(games_value),
-        created_at: Sequel::CURRENT_TIMESTAMP, last_seen_at: Sequel::CURRENT_TIMESTAMP
-      )
-    rescue Sequel::DatabaseError => e
-      warn "[games read compare] record failed: #{e.class}: #{e.message}"
-      nil
-    end
-
-    # Rows are expected in canonical order (completed rows first, then
-    # ascending created_at) -- the first row seen for a puzzle_num is its
-    # canonical one, so once a key is set here it's never overwritten. See
-    # canonical_played_game_for/CANONICALIZATION in the stats section below.
-    def history_hash_for(rows)
-      rows.each_with_object({}) do |row, hash|
-        key = row.puzzle_num.to_s
-        next if hash.key?(key)
-        hash[key] = {
-          puzzle_num: row.puzzle_num,
-          date: row.date.iso8601,
-          mode: row.mode,
-          game_status: row.game_status,
-          guesses: row.guesses,
-          completed_at: row.completed_at&.iso8601,
-          game_id: row.game_id
         }
       end
     end
@@ -1440,25 +1298,28 @@ class LeftWordleApi < Sinatra::Base
     # entry has carried since client 3c67a32 -- stored keep-first, like the
     # live upserts)}.
     #
-    # Always attempts the (client_device_id, date)-scoped upsert, even if the
-    # user already has a row for this puzzle_num from a different device --
-    # every device's data is preserved (see migration_rethink.md's
-    # preserve-information principle). row: :skipped here means no new row
-    # was created for this device+date, not "this puzzle was already known"
-    # -- whether the row counts toward stats is a separate question,
-    # reported in stats: (nil when there's no completion to apply, :applied
-    # when it moved the numbers, or apply_played_game_to_statistics!'s
-    # no-op reason otherwise) so a sync response can explain itself instead
-    # of requiring a database lookup to find out what happened.
+    # Writes only to `games` now. An import is a user telling us about games
+    # they already played; played_games is telemetry about play this server
+    # actually observed. Reconstructing telemetry rows from an import would
+    # put rows with no country, no initiated_at and a device id the importer
+    # merely claims into the table analysis runs on -- and since Phase 4 they
+    # would be indistinguishable from real play. So imports stay out of it.
+    #
+    # device_id is consequently no longer read from the entry at all: it
+    # named the telemetry row this used to write, and nothing about a game's
+    # identity depends on it any more.
+    #
+    # row: :imported means a game row was created for a puzzle the account
+    # did not have; :skipped means it already had one. stats: is nil when
+    # there is no completion to apply, :applied when it moved the numbers, or
+    # apply_played_game_to_statistics!'s no-op reason otherwise, so a sync
+    # response can explain itself without a database lookup.
     def import_history_row!(user, entry)
       return {row: :skipped, stats: nil} unless entry.is_a?(Hash)
 
       date = safe_date(entry["date"])
       puzzle_num = Integer(entry["puzzle_num"], exception: false)
       return {row: :skipped, stats: nil} unless date && puzzle_num
-
-      client_device_id = valid_uuid?(entry["device_id"]) ? entry["device_id"] : extract_client_device_id
-      return {row: :skipped, stats: nil} unless client_device_id
 
       mode = entry.fetch("mode", "regular").to_s
       mode = "regular" unless %w[regular hard insane].include?(mode)
@@ -1468,46 +1329,17 @@ class LeftWordleApi < Sinatra::Base
       completed_at = safe_time(entry["completed_at"])
       game_id = valid_uuid?(entry["game_id"]) ? entry["game_id"] : nil
 
-      is_new_row = PlayedGame.where(client_device_id: client_device_id, date: date).empty?
+      is_new_row = Game.where(user_id: user.id, puzzle_num: puzzle_num).empty?
 
-      # RETURNING tells us whether the row was actually written. owned_row_scope
-      # suppresses the update when the conflicting row belongs to someone else,
-      # and a suppressed ON CONFLICT DO UPDATE returns no rows at all -- which
-      # is exactly the case where this import must not count toward the caller's
-      # statistics further down.
-      written = DB[:played_games].insert_conflict(
-        target: [:client_device_id, :date],
-        update: {
-          # First attachment wins: an import may claim a row that's still
-          # anonymous (its own pre-account play), but never re-assigns a row
-          # already attached to a user. Belt and braces with owned_row_scope
-          # below, which stops the write reaching this row in the first place.
-          user_id: Sequel.function(:coalesce, Sequel[:played_games][:user_id], Sequel[:excluded][:user_id]),
-          puzzle_num: Sequel[:excluded][:puzzle_num],
-          mode: Sequel[:excluded][:mode],
-          game_status: Sequel.function(:coalesce, Sequel[:played_games][:game_status], Sequel[:excluded][:game_status]),
-          guesses: Sequel.function(:coalesce, Sequel[:played_games][:guesses], Sequel[:excluded][:guesses]),
-          completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
-          game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
-        },
-        **owned_row_scope(user.id)
-      ).returning(:id).insert(
-        user_id: user.id, client_device_id: client_device_id, date: date, puzzle_num: puzzle_num,
-        mode: mode, game_status: game_status, guesses: Sequel.pg_json(guesses),
-        completed_at: completed_at, updated_at: Sequel::CURRENT_TIMESTAMP, game_id: game_id
-      )
-
-      # Someone else's row -- nothing was written, so nothing is imported and
-      # no statistics move.
-      return {row: :skipped, stats: nil} if written.nil? || written.empty?
-
-      # Dual-write (Phase 2). Deliberately after the owned_row_scope gate
-      # above: an import aimed at another user's row writes nothing anywhere,
-      # so games can't be used to smuggle in a row played_games refused.
-      upsert_game!(
+      # No ownership gate needed: the upsert is keyed (user_id, puzzle_num)
+      # with the session's own user_id, so an import cannot address another
+      # account's row however the entry is crafted. That is the structural
+      # replacement for owned_row_scope and the RETURNING check it needed.
+      written = upsert_game!(
         user.id, game_id, date, puzzle_num,
         mode: mode, game_status: game_status, guesses: guesses, completed_at: completed_at
       )
+      return {row: :skipped, stats: nil} unless written
 
       stats = game_status ? apply_played_game_to_statistics!(user, puzzle_num, game_status) : nil
       {row: (is_new_row ? :imported : :skipped), stats: stats}
@@ -1520,59 +1352,26 @@ class LeftWordleApi < Sinatra::Base
     # Statistics are never trusted as a client-pushed blob (see
     # migration_rethink.md -- a prior full-recompute-from-history approach
     # caused real data loss, and a full-blob push from one device silently
-    # clobbers another device's progress). Instead every played_games row --
-    # whether it arrived via live play or a history import/backfill -- is
-    # applied here as a single incremental event.
+    # clobbers another device's progress). Instead every game --
+    # whether it arrived via live play or a history import -- is applied
+    # here as a single incremental event.
     #
     # currentStreakAnchorPuzzleNum tracks the last puzzle_num already
-    # reflected in the numbers. A row only moves the numbers if it's the
-    # canonical row for its puzzle_num AND its puzzle_num is greater than
-    # the anchor. Canonical means: completed rows (game_status set) beat
-    # in-progress ones, earliest server-arrival breaks the tie. The
-    # completed-first preference (Phase 0.5 of
-    # docs/played_games_ownership_rework.md) is what keeps a start-on-desktop
-    # finish-on-phone win countable -- with pure arrival order the desktop's
-    # never-finished row shadowed the phone's WIN forever. Anything at or behind the
-    # anchor -- a losing duplicate, or a row landing behind it (older
-    # backfill, out-of-order arrival) -- is archival only: it's preserved
-    # in played_games/history but never changes stats, regardless of the
-    # order events arrive in. A puzzle_num ahead of the anchor always
-    # moves the numbers, but next_statistics_for only *continues* the
-    # streak when it's exactly anchor + 1 -- anything further ahead is a
-    # genuine gap and breaks it instead of leaving stats frozen forever.
-    def canonical_played_game_for(user, puzzle_num)
-      PlayedGame.where(user_id: user.id, puzzle_num: puzzle_num)
-        .order(Sequel.expr(game_status: nil), :created_at, :id).first
-    end
-
-    # Only what the stats derivation actually consumes off the canonical row
-    # is compared: whether a row exists at all, its game_status (which gates
-    # :non_canonical), and its guess count (which picks the histogram
-    # bucket). next_statistics_for reads nothing else from it, so comparing
-    # more would manufacture divergences that cannot affect a single number.
-    def compare_stats_canonical_reads!(user, puzzle_num, from_played_games, from_games)
-      old_view = stats_canonical_view(from_played_games)
-      new_view = stats_canonical_view(from_games)
-      return if old_view == new_view
-
-      detail =
-        if from_games.nil? then "missing_in_games"
-        elsif from_played_games.nil? then "missing_in_played_games"
-        else
-          old_view.keys.reject { |k| old_view[k] == new_view[k] }.join(",")
-        end
-
-      record_read_divergence!("stats_canonical", user.id, puzzle_num, detail, old_view, new_view)
-    rescue => e
-      warn "[games read compare] stats_canonical: #{e.class}: #{e.message} (user=#{user.id} puzzle=#{puzzle_num})"
-    end
-
-    def stats_canonical_view(row)
-      return {present: false, game_status: nil, guess_count: nil} unless row
-      raw_guesses = row.guesses
-      is_array = raw_guesses.is_a?(Array) || raw_guesses.is_a?(Sequel::Postgres::JSONArrayBase)
-      {present: true, game_status: row.game_status, guess_count: (is_array ? raw_guesses.length : nil)}
-    end
+    # reflected in the numbers. A game moves the numbers only if its
+    # puzzle_num is greater than the anchor. Anything at or behind it -- a
+    # replayed completion, or a row landing behind the anchor from an older
+    # import -- is archival only: preserved in `games`, but it never changes
+    # stats, regardless of the order events arrive in. A puzzle_num ahead of
+    # the anchor always moves the numbers, but next_statistics_for only
+    # *continues* the streak when it's exactly anchor + 1 -- anything
+    # further ahead is a genuine gap and breaks it instead of leaving stats
+    # frozen forever.
+    #
+    # There is no canonical-row selection left to describe. Through Phases
+    # 0-3 this paragraph also explained which of several per-device rows won
+    # for a puzzle; UNIQUE (user_id, puzzle_num) means there is now exactly
+    # one, and the whole class of lost-win bugs that rule existed to referee
+    # cannot occur.
 
     # A short, bounded (see stats_adjustments:prune) audit trail of
     # statistics changes -- source distinguishes manual/automatic
@@ -1587,9 +1386,9 @@ class LeftWordleApi < Sinatra::Base
     end
 
     # Returns why this event did or didn't move the numbers -- :applied,
-    # :non_canonical (a losing duplicate, or this row's status lost to an
-    # earlier-arriving one for the same puzzle_num), or :archival (at or
-    # behind the anchor already) -- so callers can report it instead of
+    # :status_mismatch (the stored game disagrees with the result being
+    # applied, e.g. a replayed or duplicated completion), or :archival (at
+    # or behind the anchor already) -- so callers can report it instead of
     # requiring a database lookup to reconstruct what happened.
     def apply_played_game_to_statistics!(user, puzzle_num, game_status)
       return :invalid unless user && %w[WIN FAIL].include?(game_status)
@@ -1597,21 +1396,21 @@ class LeftWordleApi < Sinatra::Base
       DB.transaction do
         profile = UserProfile.where(user_id: user.id).for_update.first || find_or_create_profile(user)
 
-        # Phase 3: both sides computed, compared, and only then is one
-        # chosen. This is the read that can move someone's numbers, so it
-        # gets the same evidence treatment as history before it is trusted.
-        canonical = canonical_played_game_for(user, puzzle_num)
-        from_games = Game.first(user_id: user.id, puzzle_num: puzzle_num)
-        compare_stats_canonical_reads!(user, puzzle_num, canonical, from_games)
-        canonical = from_games if settings.read_games_enabled
+        game = Game.first(user_id: user.id, puzzle_num: puzzle_num)
 
-        next :non_canonical unless canonical && canonical.game_status == game_status
+        # Survives the death of canonicalization, doing a different job. It
+        # no longer asks "is this the winning row among several" -- there is
+        # only ever one. It asks "does the result being applied match what is
+        # actually recorded", which still stops a late or duplicated
+        # completion from moving the numbers a second time, or moving them
+        # toward a result the stored game disagrees with.
+        next :status_mismatch unless game && game.game_status == game_status
 
         stats = profile.statistics || {}
         anchor = stats["currentStreakAnchorPuzzleNum"]
         next :archival unless anchor.nil? || puzzle_num > anchor
 
-        after_stats = next_statistics_for(stats, canonical, game_status, puzzle_num)
+        after_stats = next_statistics_for(stats, game, game_status, puzzle_num)
         profile.update(statistics: Sequel.pg_json(after_stats))
         record_stats_event!(user, stats, after_stats, "game_completion", "Puzzle ##{puzzle_num} completed (#{game_status})")
         :applied
