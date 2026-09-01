@@ -46,42 +46,42 @@ Phase 1 or Phase 2 is deployed yet.**
 
 ---
 
-## 2. Blockers — resolve before attempting any deploy
+## 2. What the deploy tooling enforces
 
-> **Status:** §2.1 is resolved (notes written) and §2.2 is resolved (`v1.0.5`
-> deleted locally, `phase-*-release-candidate` tags in place). §2.3 and §2.4
-> are standing constraints, not one-off blockers. The one piece still
-> outstanding is deleting `v1.0.5` from the four remotes — see §3.1.
+None of this is a defect list. `bin/deploy` deploys the SemVer-tagged commit
+from `staging` or `main`, and the checks below read that same tree — so an
+unmet requirement stops the deploy loudly rather than shipping something
+half-ready. They are written down here so the rules are known in advance,
+not so they are treated as surprises.
 
-### 2.1 `v1.0.5` has no release-notes entry (blocks *both* repos)
+The genuinely outstanding work — the things nothing checks for you — is in
+§4, plus the remote tag deletion in §3.1.
 
-`bin/deploy` runs `bin/check-release-notes`, and the api additionally runs
-`bin/check-sibling-release`, which calls the client's checker. Right now:
+### 2.1 A release requires client release notes for that exact version
 
-```
-$ cd client && bin/check-release-notes v1.0.5 develop
-release-notes.html has no id="v1-0-5" section for v1.0.5 (checked at develop).
-```
+`client/bin/deploy` runs `bin/check-release-notes "$VERSION"` with no
+commit argument, so it checks `release-notes.html` **as of the tagged
+commit** — the same tree Capistrano deploys. The api goes through
+`bin/check-sibling-release`, which runs the client's checker against the
+client's branch and separately requires the tag to be an ancestor of it.
 
-So a `v1.0.5` deploy aborts in either repo. A `v1-0-5` section must be added
-to `client/release-notes.html` before anything ships.
+The practical rule: **write the notes, commit them, then tag.** Notes
+sitting in a working tree are not in the tagged commit and will not count.
 
 Note the erase feature stays out of any user-facing notes, as always.
 
-### 2.2 The `Phase-1-Deploy` tag cannot drive a deploy
+### 2.2 Only SemVer tags can drive a deploy
 
-`bin/deploy` validates any explicit tag against
+`bin/deploy` validates an explicit tag against
 `^v[0-9]+\.[0-9]+\.[0-9]+(-suffix)?$`, and the no-tag path resolves the
 branch tip's tag through `ReleaseTagResolver::TAG_PATTERN`
-(`/\Av\d+\.\d+\.\d+\z/`). `Phase-1-Deploy` matches neither, so:
+(`/\Av\d+\.\d+\.\d+\z/`, no suffix). So the `phase-*` tags in both repos are
+bookmarks for reading history, never deploy inputs:
 
 ```
-bin/deploy staging Phase-1-Deploy
-# Error: 'Phase-1-Deploy' is not a valid version tag (expected vX.Y.Z or vX.Y.Z-suffix)
+bin/deploy staging phase-2-release-candidate
+# Error: 'phase-2-release-candidate' is not a valid version tag
 ```
-
-It is a useful bookmark, but deploys must go through a SemVer tag. Since it
-points at the same commit as `v1.0.5` in both repos, nothing is lost.
 
 ### 2.3 Release tags are lockstep across repos — the design doc is wrong about this
 
@@ -142,7 +142,8 @@ deleted so the number can be re-cut to cover Phase 1 *and* Phase 2 together
   repos (api `4d56d3f`, client `da7783f`), its message recording the phase
   status there.
 - `v1.0.5` deleted **locally** in both repos.
-- `release-notes.html` gained a `v1-0-5` section (§2.1 resolved).
+- `release-notes.html` gained a `v1-0-5` section, so the §2.1 check will
+  pass once it is merged and tagged.
 - `things-to-test-tasks.html` re-pointed at this release; the verified
   v1.0.4 items were pruned per that file's own convention.
 - `phase-2-release-candidate` tagged at the tip of `develop` in both repos.
@@ -183,13 +184,15 @@ cd ../client && git push paula-poundstone staging && git push paula-poundstone v
 cd ../api    && git push paula-poundstone staging && git push paula-poundstone v1.0.5
 ```
 
-Two things that will stop you if the order slips:
+Two things that will stop you if the order slips — both by design, and both
+loud:
 
-- The release-notes check reads `release-notes.html` **out of the branch
-  being deployed**, not the working tree, so the notes must be committed and
-  merged into `staging` before the tag will pass.
+- The release-notes check never looks at your working tree. Deploying the
+  client reads `release-notes.html` **out of the tagged commit**; the api's
+  sibling check reads it out of the client's **branch**. Either way the
+  notes have to be committed before the tag is cut.
 - `check-sibling-release` requires the sibling tag to be an **ancestor of
-  that same branch**. A tag left on `develop` does not satisfy it.
+  the branch being deployed**. A tag left on `develop` does not satisfy it.
 
 `bin/deploy` runs `bundle exec rake test` and **deletes the local tag if the
 suite fails**, so expect to re-tag if that happens.
