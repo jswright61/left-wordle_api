@@ -673,7 +673,7 @@ class LeftWordleApi < Sinatra::Base
     # device that drops offline mid-game keeps firing anonymous progress at
     # its now-claimed row, and those beats are now dropped instead of
     # landing (they never applied statistics anyway -- see
-    # docs/played_games_ownership_rework.md, whose completion-replay design
+    # docs/ownership_rework.md, whose completion-replay design
     # is the real fix for that game reaching the account).
     def owned_row_scope(user_id)
       owned = {Sequel[:played_games][:user_id] => nil}
@@ -681,7 +681,7 @@ class LeftWordleApi < Sinatra::Base
       {update_where: owned}
     end
 
-    # -- games dual-write (Phase 2, docs/played_games_ownership_rework.md) ---
+    # -- games dual-write (Phase 2, docs/ownership_rework.md) ---
     #
     # Every authenticated write to played_games is mirrored here into the
     # user-owned games table. Nothing reads games yet -- Phase 3 moves reads
@@ -747,7 +747,7 @@ class LeftWordleApi < Sinatra::Base
     end
 
     # game_id (here and in record_game_event!) is the client-minted UUIDv7
-    # from the ownership rework's Phase 1 (docs/played_games_ownership_rework.md):
+    # from the ownership rework's Phase 1 (docs/ownership_rework.md):
     # stored keep-first -- coalesce(existing, excluded) -- so the first id a
     # row sees wins, and RETURNING hands the winning id back so the response
     # can tell the client which id to converge on. Identity, dedup and
@@ -1407,7 +1407,7 @@ class LeftWordleApi < Sinatra::Base
     # the anchor. Canonical means: completed rows (game_status set) beat
     # in-progress ones, earliest server-arrival breaks the tie. The
     # completed-first preference (Phase 0.5 of
-    # docs/played_games_ownership_rework.md) is what keeps a start-on-desktop
+    # docs/ownership_rework.md) is what keeps a start-on-desktop
     # finish-on-phone win countable -- with pure arrival order the desktop's
     # never-finished row shadowed the phone's WIN forever. Anything at or behind the
     # anchor -- a losing duplicate, or a row landing behind it (older

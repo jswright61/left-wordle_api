@@ -108,7 +108,7 @@ This endpoint is telemetry-only. The client should not block gameplay on it.
 |-------|------|----------|-------------|
 | `date` | string | Yes | ISO 8601 date — `YYYY-MM-DD` |
 | `puzzle_num` | integer | Yes | Days since puzzle epoch; must match the submitted date |
-| `game_id` | string | No | Client-minted UUIDv7 identifying this game (see `played_games_ownership_rework.md`, Phase 1). Stored keep-first per device/date row; a malformed value is dropped, never rejected. Also accepted by `/game/progress`, `/game/complete`, and `/api/v2/history/import` entries. |
+| `game_id` | string | No | Client-minted UUIDv7 identifying this game (see `ownership_rework.md`, Phase 1). Stored keep-first per device/date row; a malformed value is dropped, never rejected. Also accepted by `/game/progress`, `/game/complete`, and `/api/v2/history/import` entries. |
 
 **Headers**
 

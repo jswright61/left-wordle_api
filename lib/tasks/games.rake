@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 namespace :games do
-  # Phase 2 of docs/played_games_ownership_rework.md.
+  # Phase 2 of docs/ownership_rework.md.
   #
   # Copies every user-owned played_games row into games, one row per
   # (user_id, puzzle_num). Run this only AFTER the dual-write is deployed, so

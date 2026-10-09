@@ -456,7 +456,7 @@ class AppTest < Minitest::Test
     assert_equal({"status" => "recorded", "game_id" => nil}, json_response)
   end
 
-  # -- game_id (Phase 1 of docs/played_games_ownership_rework.md) ----------
+  # -- game_id (Phase 1 of docs/ownership_rework.md) ----------
 
   def test_post_start_stores_and_returns_a_client_minted_game_id
     @client_device_ids = [client_device_id = SecureRandom.uuid]

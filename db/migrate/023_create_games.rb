@@ -2,7 +2,7 @@
 
 Sequel.migration do
   up do
-    # Phase 2 of docs/played_games_ownership_rework.md. Authenticated play
+    # Phase 2 of docs/ownership_rework.md. Authenticated play
     # moves here, where a user owns their rows outright: identity is
     # (user_id, puzzle_num), not (device, date), so the same user finishing
     # one puzzle on two devices can no longer produce two rows that need

@@ -636,7 +636,7 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  # Phase 0.5 (docs/played_games_ownership_rework.md): anonymous updates are
+  # Phase 0.5 (docs/ownership_rework.md): anonymous updates are
   # scoped to unclaimed rows. Anyone can send a claimed row's device id and
   # date without a session, so an anonymous "completion" used to poison the
   # canonical row and bounce the owner's real win as :non_canonical.
@@ -735,7 +735,7 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  # Phase 1 (docs/played_games_ownership_rework.md): import entries carry the
+  # Phase 1 (docs/ownership_rework.md): import entries carry the
   # client-minted game_id local history has accumulated since client 3c67a32,
   # stored keep-first and surfaced back through the history read.
   def test_history_import_stores_a_game_id_and_history_returns_it
@@ -787,7 +787,7 @@ class WebauthnTest < Minitest::Test
     assert(rows.any? { |r| r.client_device_id == device_b && r.game_status == "FAIL" })
   end
 
-  # -- games dual-write (Phase 2 of docs/played_games_ownership_rework.md) --
+  # -- games dual-write (Phase 2 of docs/ownership_rework.md) --
   #
   # Nothing reads games yet; these pin that the table accumulates correctly
   # alongside played_games, so Phase 3 has something trustworthy to cut over

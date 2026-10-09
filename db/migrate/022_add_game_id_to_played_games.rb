@@ -3,7 +3,7 @@
 Sequel.migration do
   up do
     alter_table(:played_games) do
-      # Transitional (Phase 1 of docs/played_games_ownership_rework.md):
+      # Transitional (Phase 1 of docs/ownership_rework.md):
       # accumulates the client-minted UUIDv7 so the Phase 2 games backfill
       # can carry real ids instead of minting backdated ones. Dropped again
       # in Phase 4 alongside user_id -- long-term this table keeps no join
