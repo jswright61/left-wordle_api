@@ -246,13 +246,14 @@ enough that reverting is unthinkable, plus a verified backup. Procedure:
 **Local:**
 
 - `develop` in both repos holds Phases 1–2 (`phase-2-release-candidate`).
-  Client `develop` adds one commit since: `46cb56c`, the stats checker
-  call to action.
+  Client `develop` adds since then: the stats checker call to action
+  (`46cb56c`), the remaining-answers count fix (`d040a06`), and their
+  release-notes lines.
 - Local `staging` in both repos holds an unpushed Phase 1-only merge. Local
   `main` and `staging` are both ancestors of `develop`, so the release merges
   are fast-forwards.
-- Stale **local** api tag `v1.0.5` on `4d56d3f` must be deleted before
-  re-tagging (§7.1).
+- No `v1.0.5` tag exists anywhere. The stale local api one (tag object
+  `709d905` on `4d56d3f`) was deleted 2026-10-10.
 - `model-redesign/phase-3` and `phase-4` (both repos, stacked, never pushed).
 
 ## 6. Branch plan
@@ -277,14 +278,12 @@ enough that reverting is unthinkable, plus a verified backup. Procedure:
 
 ### 7.1 Before tagging
 
-```bash
-cd api && git tag -d v1.0.5    # stale local tag on 4d56d3f; no remote has it
-```
+Nothing outstanding as of 2026-10-10: the stale tag is gone and the client's
+`v1-0-5` release-notes section covers everything on `develop`, committed.
 
-- Client `release-notes.html` already has a `v1-0-5` section. It doesn't yet
-  mention the stats checker change (`46cb56c`), which ships in this release
-  too. The notes must be **committed before the tag is cut**; the check
-  reads the tagged tree, not the working tree. Keep erase out of them.
+If anything else lands on `develop` before tagging, give it a release-notes
+line too. The notes must be **committed before the tag is cut**; the check
+reads the tagged tree, not the working tree. Keep erase out of them.
 
 ### 7.2 Rules the deploy tooling enforces
 
