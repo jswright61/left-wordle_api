@@ -220,7 +220,7 @@ database restore undoes it.** Requires Phase 3's flag on in production long
 enough that reverting is unthinkable, plus a verified backup. Procedure:
 `docs/phase_4_runbook.md` on the branch.
 
-## 5. Current state (verified 2026-10-09)
+## 5. Current state (deployed and remotes verified 2026-10-09; local 2026-10-10)
 
 **Deployed** (from each stack's `current/REVISION` on `paula-poundstone`):
 
@@ -245,16 +245,30 @@ enough that reverting is unthinkable, plus a verified backup. Procedure:
 
 **Local:**
 
-- `develop` in both repos holds Phases 1–2 (`phase-2-release-candidate`).
-  Client `develop` adds since then: the stats checker call to action
-  (`46cb56c`), the remaining-answers count fix (`d040a06`), and their
-  release-notes lines.
+- `develop` in both repos holds Phases 1–2 (`phase-2-release-candidate`)
+  plus the following, all bound for `v1.0.5`:
+  - **api:** this doc (`5456cdb`, `a07826d`); the generator and release check
+    for the client's sorted answer list (`6221889`); answers loaded from
+    `db/seeds/answers.txt` at boot instead of the `answers` table
+    (`611ec8b`; production's table was checked first and matches the file
+    exactly).
+  - **client:** stats-checker call to action (`46cb56c`); comments repointed
+    here (`1ebc334`); remaining-count fill-in (`d040a06`); "Already Played"
+    at boot after a network failure (`45200d4`); played-game banner and board
+    (`f936a5f`); boards carried through history export/import (`74241c6`);
+    board letters scaled to the tile (`a84a345`); header title kept clear of
+    the icons (`027ff3f`); remaining-answer counts computed in the browser
+    (`ce7cf52`); regenerated sorted answer list and its release check
+    (`d586c14`); plus release-notes commits.
 - Local `staging` in both repos holds an unpushed Phase 1-only merge. Local
-  `main` and `staging` are both ancestors of `develop`, so the release merges
-  are fast-forwards.
+  `main` and `staging` are both ancestors of `develop` (rechecked
+  2026-10-10), so the release merges are fast-forwards.
 - No `v1.0.5` tag exists anywhere. The stale local api one (tag object
   `709d905` on `4d56d3f`) was deleted 2026-10-10.
 - `model-redesign/phase-3` and `phase-4` (both repos, stacked, never pushed).
+- The local api **test** database was rebuilt on 2026-10-10 (it was at
+  migration 26 from the phase branches, which `develop`'s 23 can't migrate
+  down from). It migrates forward again on a phase branch.
 
 ## 6. Branch plan
 
@@ -266,10 +280,16 @@ enough that reverting is unthinkable, plus a verified backup. Procedure:
    `git rebase --update-refs develop` moves both. In the client, the
    stats-checker commit cherry-picked onto both branches drops out
    automatically as already applied.
-3. The rebase will conflict where the branches edit the deleted design doc.
-   Resolve by moving their "As built" notes into §4 of this doc and pointing
-   `phase_3_runbook.md` / `phase_4_runbook.md` here instead of at the deleted
-   docs.
+3. The api rebase will conflict in two places (checked 2026-10-10 with
+   `git merge-tree`; the client's merges cleanly):
+   - **The deleted design doc** (modify/delete, from Phase 3's "As built"
+     commit). Resolve by moving its "As built" notes into §4 of this doc,
+     deleting the old file, and pointing `phase_3_runbook.md` /
+     `phase_4_runbook.md` here instead of at the deleted docs.
+   - **Three comment-only hunks in `app.rb`** (Phase 4): `develop` repointed
+     doc references at this file, and Phase 4 rewrote the same comments.
+     Keep Phase 4's text and change its `docs/played_games_ownership_rework.md`
+     references to `docs/ownership_rework.md`.
 4. Merge `phase-3` into `develop`, test locally, then release it through
    staging and prod like any other release (`phase_3_runbook.md`).
 5. Phase 4 follows only when its gate is met.
@@ -278,8 +298,10 @@ enough that reverting is unthinkable, plus a verified backup. Procedure:
 
 ### 7.1 Before tagging
 
-Nothing outstanding as of 2026-10-10: the stale tag is gone and the client's
-`v1-0-5` release-notes section covers everything on `develop`, committed.
+The stale tag is gone. **Outstanding:** two player-visible client changes
+have no release-notes line yet: the "Already Played" fix (`45200d4`) and the
+played-game banner and board (`f936a5f`). Everything else on `develop` is
+covered.
 
 If anything else lands on `develop` before tagging, give it a release-notes
 line too. The notes must be **committed before the tag is cut**; the check
@@ -300,6 +322,14 @@ These are guardrails, not defects. Each fails the deploy loudly.
   repos is *deploy order*, which is what expand/contract depends on.
 - **Deploys come from `staging` / `main`**, and the sibling tag must be an
   ancestor of that branch. A tag on `develop` doesn't count.
+- **The two answer lists match.** `bin/check-sibling-release` (both repos)
+  compares the api's `db/seeds/answers.txt` with the client's
+  `src/answer_list_sorted.js` at the tag (five-letter words, sorted,
+  de-duplicated). The client computes remaining-answer counts from its
+  copy, so a mismatch would show wrong counts. Fix by running
+  `bundle exec rake client:generate_word_list` in the api. Added for
+  `v1.0.5`; tags from before the client's sorted file existed (`v1.0.3`
+  and earlier) fail it.
 - `bin/deploy` runs the test suite and **deletes the local tag if it fails**.
   Expect to re-tag then.
 - Migrations run automatically at `deploy:updated`, before the symlink flip.
@@ -426,6 +456,14 @@ where duplicates genuinely collapse.
 - **`api_interface.md` is incomplete.** No sections for `/game/complete`,
   `/game/progress`, or any `/api/v2` endpoint.
 - **11 pre-existing `standardrb` offenses** in the api, none from this work.
+- **Retire the server's remaining-count endpoints** in a later release:
+  `POST /api/v1/game/remaining_counts` and `return_remaining_count` on
+  `/api/v1/game/guess`. The client stopped calling them in `v1.0.5`, but
+  browsers on older code still do for a while.
+- **The `answers` table is unused at runtime** since `611ec8b`; the rake
+  tasks still write it. It could be dropped, and `legal_words` could move to
+  its checked-in file the same way (check production's table against
+  `db/seeds/legal_words.txt` first).
 - **`played_games` has no retention policy.** After Phase 4 it's anonymous,
   so keeping it is fine privacy-wise, but it grows forever.
 
