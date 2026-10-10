@@ -298,10 +298,9 @@ enough that reverting is unthinkable, plus a verified backup. Procedure:
 
 ### 7.1 Before tagging
 
-The stale tag is gone. **Outstanding:** two player-visible client changes
-have no release-notes line yet: the "Already Played" fix (`45200d4`) and the
-played-game banner and board (`f936a5f`). Everything else on `develop` is
-covered.
+Nothing outstanding as of 2026-10-10: the stale tag is gone and the
+client's `v1-0-5` release-notes section covers everything on `develop`,
+committed (last addition `a6bb2e5`).
 
 If anything else lands on `develop` before tagging, give it a release-notes
 line too. The notes must be **committed before the tag is cut**; the check
