@@ -31,3 +31,16 @@ if ! (cd "$client_dir" && bin/check-release-notes "$tag" "$branch"); then
   echo "client's release-notes.html on $branch has no entry for '$tag'." >&2
   exit 1
 fi
+
+# The client computes remaining-answer counts from its alphabetized copy of
+# the answers, so both lists must hold the same words at the release tag:
+# five-letter words, sorted, de-duplicated. Only runs at deploy.
+answer_words() { grep -oE "$1" | tr -d '"' | sort -u || true; }
+api_words="$(git -C "$api_dir" show "$tag:db/seeds/answers.txt" | answer_words '^[a-z]{5}$')"
+client_words="$(git -C "$client_dir" show "$tag:src/answer_list_sorted.js" | answer_words '"[a-z]{5}"')"
+if [[ -z "$api_words" || "$api_words" != "$client_words" ]]; then
+  echo "answer lists differ at '$tag': api db/seeds/answers.txt vs client src/answer_list_sorted.js" >&2
+  diff <(printf '%s\n' "$api_words") <(printf '%s\n' "$client_words") | head -20 >&2 || true
+  echo "Regenerate the client copy from api/: bundle exec rake client:generate_word_list" >&2
+  exit 1
+fi

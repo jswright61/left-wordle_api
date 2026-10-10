@@ -154,6 +154,26 @@ def wl_write_client_js(answer_words, valid_guess_words)
   puts "Wrote #{combined.length} words to #{output}"
 end
 
+# The client's alphabetized copy of the answers -- it computes
+# remaining-answer counts and the non-answer warning from it. Sorted (not
+# play order) so the bundle doesn't reveal the puzzle sequence.
+# bin/check-sibling-release fails a release whose two lists differ.
+def wl_write_client_sorted_answers(answers)
+  words = answers.uniq.sort
+  output = File.expand_path("../../client/src/answer_list_sorted.js", __FILE__)
+  header = <<~JS
+    // Alphabetically-sorted copy of the answer list (generated from
+    // api/db/seeds/answers.txt by the api's word_lists rake tasks -- don't
+    // edit by hand). Used for remaining-answer counts and the "Warn if
+    // guess is not in the answer list" preference. Sorted (rather than in
+    // play order) so the client bundle does not reveal the puzzle-number ->
+    // word sequence.
+  JS
+  body = words.map(&:inspect).join(",\n    ")
+  File.write(output, "#{header}var sorted_answer_words = [#{body}];\n")
+  puts "Wrote #{words.length} words to #{output}"
+end
+
 def wl_write_seed_files(answers_ordered, legal_words_sorted)
   seeds_dir = File.join(__dir__, "db/seeds")
   File.write(File.join(seeds_dir, "answers.txt"), "#{answers_ordered.join("\n")}\n")
@@ -255,18 +275,21 @@ namespace :word_lists do
     answers = Answer.order(:position).select_map(:word)
     merged_guesses = Set.new(LegalWord.select_map(:word))
     wl_write_client_js(answers, merged_guesses)
+    wl_write_client_sorted_answers(answers)
     wl_write_seed_files(answers, merged_guesses)
   end
 end
 
 namespace :client do
-  desc "Regenerate client/src/valid_guesses.js from the answers + legal_words tables"
+  desc "Regenerate client/src/valid_guesses.js and answer_list_sorted.js from the answers + legal_words tables"
   task :generate_word_list do
     require_relative "lib/db"
     require_relative "lib/models/answer"
     require_relative "lib/models/legal_word"
 
-    wl_write_client_js(Answer.order(:position).select_map(:word), LegalWord.select_map(:word))
+    answers = Answer.order(:position).select_map(:word)
+    wl_write_client_js(answers, LegalWord.select_map(:word))
+    wl_write_client_sorted_answers(answers)
   end
 end
 
