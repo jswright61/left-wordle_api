@@ -463,6 +463,10 @@ where duplicates genuinely collapse.
   tasks still write it. It could be dropped, and `legal_words` could move to
   its checked-in file the same way (check production's table against
   `db/seeds/legal_words.txt` first).
+- **Missed-days streak preference** (deferred from `v1.0.5`): changes the
+  streak rule in `next_statistics_for`, so build it after the phase branches
+  are rebased, and ship it with Phase 3 or after. Design:
+  `client/docs/missed_days_do_not_end_streaks.md`.
 - **`played_games` has no retention policy.** After Phase 4 it's anonymous,
   so keeping it is fine privacy-wise, but it grows forever.
 
