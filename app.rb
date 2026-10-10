@@ -71,8 +71,15 @@ class LeftWordleApi < Sinatra::Base
     set :protection, except: :json_csrf
     set :show_exceptions, false
 
+    # Answers come from the checked-in file, deployed with the code, rather
+    # than the answers table (which only mirrors it, via rake db:seed, and
+    # nothing seeds at deploy). The client's answer_list_sorted.js is
+    # generated from the same file, and bin/check-sibling-release fails a
+    # release whose two lists differ.
+    answers = File.readlines(File.join(__dir__, "db/seeds/answers.txt"), chomp: true).reject(&:empty?)
+    raise "db/seeds/answers.txt is empty" if answers.empty?
     LeftWordle::Game.load_words!(
-      answers: Answer.order(:position).select_map(:word),
+      answers: answers,
       legal_words: LegalWord.select_map(:word)
     )
 
