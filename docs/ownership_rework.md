@@ -3,8 +3,8 @@
 The single reference for this rework: why it exists, what was decided, what
 each phase built, where things stand, and how the next release ships.
 
-State in §5 verified 2026-10-09 against all four remotes of both repos and
-the server's deployed `REVISION` files. Supersedes
+State in §5 as of 2026-10-11, after `v1.0.5` and `v1.0.6` reached
+production and the phase branches were rebased onto `develop`. Supersedes
 `played_games_ownership_rework.md` and `phase_2_follow_up.md` (both deleted).
 
 This is a data-model change with an API-contract surface, so it lives in
@@ -127,8 +127,8 @@ collapse, `owned_row_scope`, the import `RETURNING` gate, and the
 |---|---|---|---|
 | 0 | `owned_row_scope`: authenticated writes touch only unclaimed or own rows | api `e307916` | ✅ prod, in `v1.0.4` |
 | 0.5 | Anonymous updates scoped to unclaimed rows; canonical prefers completed rows | api `d10004e` | ✅ prod, in `v1.0.4` |
-| 1 | Client mints, sends, and adopts `game_id`; api stores and returns it; session-death completion replay | api `2767b12` (mig. 022), client `3c67a32`, `b1b6dd2` | ❌ on `develop`, ships in `v1.0.5` |
-| 2 | `games` table, dual-write, `games:backfill` / `games:verify` | api `a4b3a4b` (mig. 023) | ❌ on `develop`, ships in `v1.0.5` |
+| 1 | Client mints, sends, and adopts `game_id`; api stores and returns it; session-death completion replay | api `2767b12` (mig. 022), client `3c67a32`, `b1b6dd2` | ✅ prod, in `v1.0.5` |
+| 2 | `games` table, dual-write, `games:backfill` / `games:verify` | api `a4b3a4b` (mig. 023) | ✅ prod, in `v1.0.5`; backfilled 2026-10-11 |
 | 3 | Dual-read comparison, `read_games_enabled` flag (default off) | branch `model-redesign/phase-3` (mig. 024) | ❌ |
 | 4 | Drop `played_games.user_id`; delete canonicalization. **Irreversible.** | branch `model-redesign/phase-4` (mig. 025–026) | ❌ |
 
@@ -220,81 +220,60 @@ database restore undoes it.** Requires Phase 3's flag on in production long
 enough that reverting is unthinkable, plus a verified backup. Procedure:
 `docs/phase_4_runbook.md` on the branch.
 
-## 5. Current state (deployed and remotes verified 2026-10-09; local 2026-10-10)
+## 5. Current state (2026-10-11)
 
-**Deployed** (from each stack's `current/REVISION` on `paula-poundstone`):
+**Deployed:** `v1.0.5` (Phases 1–2) and then `v1.0.6` are in production in
+both repos. `v1.0.6` was client-only; its api tag sits on the same commit as
+`v1.0.5` (`8a3834a`). On production, `games:backfill` ran and
+`games:verify` came back clean: 1179 `games` rows, 1179 canonical
+`played_games`, 0 missing, 0 status mismatches.
 
-| Stack | Release | Commit | Deployed |
-|---|---|---|---|
-| api prod | `v1.0.4` | `462ed01` | 2026-08-31 21:13 |
-| api staging | `v1.0.4` | `462ed01` | 2026-08-31 13:44 |
-| client prod | `v1.0.4` | `01b288d` | 2026-08-31 21:27 |
-| client staging | `v1.0.4` | `01b288d` | 2026-08-31 13:43 |
+**Branches:**
 
-**Remotes** (chris-rock, codeberg, origin, paula-poundstone agree):
-
-- Latest release tag `v1.0.4` in both repos, on the deployed commits. No
-  `v1.0.5` on any remote.
-- api `main` and `staging` are at `v1.0.4`. Client `staging` is at `v1.0.4`,
-  but client **`main` is still at `v1.0.3`** (`aace4e0`): prod was deployed
-  from the tag, and `main` was never pushed. Local client `main` is at
-  `v1.0.4`, so pushing it at the next prod deploy brings the remotes in line.
-- Bookmark tags already pushed: `Phase-1-Deploy` (api) and
-  `phase-1-complete` (both). Harmless, since `bin/deploy` rejects non-SemVer
-  tags.
-
-**Local:**
-
-- `develop` in both repos holds Phases 1–2 (`phase-2-release-candidate`)
-  plus the following, all bound for `v1.0.5`:
-  - **api:** this doc (`5456cdb`, `a07826d`); the generator and release check
-    for the client's sorted answer list (`6221889`); answers loaded from
-    `db/seeds/answers.txt` at boot instead of the `answers` table
-    (`611ec8b`; production's table was checked first and matches the file
-    exactly).
-  - **client:** stats-checker call to action (`46cb56c`); comments repointed
-    here (`1ebc334`); remaining-count fill-in (`d040a06`); "Already Played"
-    at boot after a network failure (`45200d4`); played-game banner and board
-    (`f936a5f`); boards carried through history export/import (`74241c6`);
-    board letters scaled to the tile (`a84a345`); header title kept clear of
-    the icons (`027ff3f`); remaining-answer counts computed in the browser
-    (`ce7cf52`); regenerated sorted answer list and its release check
-    (`d586c14`); plus release-notes commits.
-- Local `staging` in both repos holds an unpushed Phase 1-only merge. Local
-  `main` and `staging` are both ancestors of `develop` (rechecked
-  2026-10-10), so the release merges are fast-forwards.
-- No `v1.0.5` tag exists anywhere. The stale local api one (tag object
-  `709d905` on `4d56d3f`) was deleted 2026-10-10.
-- `model-redesign/phase-3` and `phase-4` (both repos, stacked, never pushed).
-- The local api **test** database was rebuilt on 2026-10-10 (it was at
-  migration 26 from the phase branches, which `develop`'s 23 can't migrate
-  down from). It migrates forward again on a phase branch.
+- `main` and `staging` in both repos are at the `v1.0.6` commits and pushed.
+- `develop` is local-only by design (the pre-push hooks allow only `main`
+  and `staging`). Unreleased on it: api `e3d5c50` (`content_too_large`
+  status), client `02b9386` (production-release marker fixed) and
+  `d08d4b8` (`v1.0.6` marked).
+- `model-redesign/phase-3` and `phase-4`, both repos, rebased onto
+  `develop` 2026-10-11, stacked (`phase-4` on `phase-3`), never pushed.
+  api `phase-3` is three commits plus two from the rebase: doc references
+  repointed here (`0855b41`), and a fix so a divergence with one side
+  missing is recorded rather than dropped (`0501556`). Client `phase-3` is
+  the staging test tasks (`9dd19b1`); `phase-4` adds `f597957`.
+- Pre-rebase tips are kept as `backup/phase-{3,4}-pre-rebase`: tags in the
+  api, branches in the client. Delete them once nothing needs comparing.
+  Delete the client branches before the next `--update-refs` rebase, which
+  would move them along with the phase branches.
+- The local api test database follows whichever branch last ran the
+  suite. After running a phase branch (migrations 024–026) it must be
+  rebuilt before `develop`'s suite runs: `dropdb left_wordle_api_test &&
+  createdb left_wordle_api_test`.
 
 ## 6. Branch plan
 
-1. `develop` → `staging` → `main` ships `v1.0.5` (Phases 1–2). Code not ready
-   for `v1.0.5` lives on the matching `model-redesign/phase-N` branch, never
-   on `develop`.
-2. After `v1.0.5` is on `main`, rebase the phase branches onto `develop`.
-   They are stacked, so one rebase run from `phase-4` with
-   `git rebase --update-refs develop` moves both. In the client, the
-   stats-checker commit cherry-picked onto both branches drops out
-   automatically as already applied.
-3. The api rebase will conflict in two places (checked 2026-10-10 with
-   `git merge-tree`; the client's merges cleanly):
-   - **The deleted design doc** (modify/delete, from Phase 3's "As built"
-     commit). Resolve by moving its "As built" notes into §4 of this doc,
-     deleting the old file, and pointing `phase_3_runbook.md` /
-     `phase_4_runbook.md` here instead of at the deleted docs.
-   - **Three comment-only hunks in `app.rb`** (Phase 4): `develop` repointed
-     doc references at this file, and Phase 4 rewrote the same comments.
-     Keep Phase 4's text and change its `docs/played_games_ownership_rework.md`
-     references to `docs/ownership_rework.md`.
-4. Merge `phase-3` into `develop`, test locally, then release it through
-   staging and prod like any other release (`phase_3_runbook.md`).
-5. Phase 4 follows only when its gate is met.
+1. ✅ `v1.0.5` (Phases 1–2) shipped from `develop`.
+2. ✅ Phase branches rebased onto `develop`. The conflicts were all doc
+   references or Phase 4 deleting code `develop` had commented on; the "As
+   built" notes for both phases are now in §4 and the old design doc is
+   gone.
+3. **Now: let production accumulate games under the new schema** before
+   Phase 3 merges, so its soak has real `games` rows written by the
+   dual-write, not just backfilled ones.
+4. **Hotfixes in the meantime** go on `develop` and ship as a normal
+   release. Then carry them onto the phase branches:
+   ```bash
+   git checkout model-redesign/phase-4
+   git rebase --update-refs develop    # moves phase-3 too
+   ```
+   then run the suites on `phase-3` and `phase-4` (and rebuild the api test
+   DB afterwards). Remove the client's `backup/*` branches first (see §5).
+5. Merge `phase-3` into `develop` in both repos, test locally, then release
+   it like any other release. The release itself is `phase_3_runbook.md`
+   §2; §7 below is the model for the mechanics.
+6. Phase 4 follows only when its gate is met (`phase_4_runbook.md`).
 
-## 7. Releasing `v1.0.5` (Phases 1 and 2)
+## 7. Releasing `v1.0.5` (Phases 1 and 2) — done 2026-10-11
 
 ### 7.1 Before tagging
 
@@ -440,10 +419,14 @@ where duplicates genuinely collapse.
 
 ### 7.8 Phase 3 readiness
 
-- [ ] `v1.0.5` in production and soaked
-- [ ] `games:backfill` run on production, `games:verify` clean
-- [ ] Zero `[games dual-write]` lines in production over the soak
-- [ ] `stats_adjustments` backlog pruned
+- [x] `v1.0.5` in production (2026-10-11)
+- [x] `games:backfill` run on production, `games:verify` clean (2026-10-11)
+- [ ] Production has run long enough to accumulate games written by the
+      dual-write (planned: later in the week of 2026-10-12)
+- [ ] Zero `[games dual-write]` lines in production over that time:
+      `journalctl -u left-wordle-api --since "2026-10-11" | grep "games dual-write"`
+- [ ] `games:verify` still clean on production just before merging
+- [ ] `stats_adjustments` backlog pruned (§7.7 step 1)
 
 ## 8. Open items
 
@@ -464,8 +447,8 @@ where duplicates genuinely collapse.
   its checked-in file the same way (check production's table against
   `db/seeds/legal_words.txt` first).
 - **Missed-days streak preference** (deferred from `v1.0.5`): changes the
-  streak rule in `next_statistics_for`, so build it after the phase branches
-  are rebased, and ship it with Phase 3 or after. Design:
+  streak rule in `next_statistics_for`. The phase branches are rebased, so
+  it's unblocked; ship it with Phase 3 or after. Design:
   `client/docs/missed_days_do_not_end_streaks.md`.
 - **`played_games` has no retention policy.** After Phase 4 it's anonymous,
   so keeping it is fine privacy-wise, but it grows forever.
