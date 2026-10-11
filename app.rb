@@ -1377,13 +1377,21 @@ class LeftWordleApi < Sinatra::Base
         }
       ).insert(
         read_name: read_name, user_id: user_id, puzzle_num: puzzle_num, detail: detail,
-        played_games_value: Sequel.pg_jsonb(played_games_value),
-        games_value: Sequel.pg_jsonb(games_value),
+        played_games_value: divergence_jsonb(played_games_value),
+        games_value: divergence_jsonb(games_value),
         created_at: Sequel::CURRENT_TIMESTAMP, last_seen_at: Sequel::CURRENT_TIMESTAMP
       )
     rescue Sequel::DatabaseError => e
       warn "[games read compare] record failed: #{e.class}: #{e.message}"
       nil
+    end
+
+    # A missing side (missing_in_games / missing_in_played_games) is stored
+    # as SQL NULL. Sequel.pg_jsonb(nil) doesn't wrap nil -- it falls through
+    # to pg_jsonb_op, which isn't loaded -- so without this the divergences
+    # the soak most needs to see were never recorded.
+    def divergence_jsonb(value)
+      value.nil? ? nil : Sequel.pg_jsonb(value)
     end
 
     # Rows are expected in canonical order (completed rows first, then

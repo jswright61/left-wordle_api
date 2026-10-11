@@ -978,6 +978,25 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
+  def test_a_row_missing_from_games_is_recorded_with_a_null_side
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+
+    post_json "/api/v1/game/complete",
+      {date: "2026-06-04", mode: "regular", game_status: "WIN", guesses: [["crane", "22222"]]},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    Game.where(user_id: body["user_id"]).delete
+    json_get("/api/v2/history")
+
+    row = GamesReadDivergence.first(user_id: body["user_id"], read_name: "history")
+    refute_nil row, "a row only played_games has must be recorded, not dropped"
+    assert_equal "missing_in_games", row.detail
+    assert_equal "WIN", row.played_games_value["game_status"]
+    assert_nil row.games_value
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   def test_repeat_reads_bump_the_same_divergence_rather_than_multiplying_rows
     body = register_new_device!
     device_id = SecureRandom.uuid
