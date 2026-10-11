@@ -450,7 +450,7 @@ class LeftWordleApi < Sinatra::Base
     def diagnostics_response
       raw_body = request.body.read
       halt_json(:bad_request, "Request body is required") if raw_body.strip.empty?
-      halt_json(:payload_too_large, "Request body exceeds 512 KB") if raw_body.bytesize > MAX_DIAGNOSTICS_BODY_BYTES
+      halt_json(:content_too_large, "Request body exceeds 512 KB") if raw_body.bytesize > MAX_DIAGNOSTICS_BODY_BYTES
       JSON.parse(raw_body)
       halt_json(:service_unavailable, "Diagnostics email is not configured") unless smtp_configured?
       send_diagnostics_email(raw_body)
