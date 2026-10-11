@@ -237,10 +237,13 @@ both repos. `v1.0.6` was client-only; its api tag sits on the same commit as
   `d08d4b8` (`v1.0.6` marked).
 - `model-redesign/phase-3` and `phase-4`, both repos, rebased onto
   `develop` 2026-10-11, stacked (`phase-4` on `phase-3`), never pushed.
-  api `phase-3` is three commits plus two from the rebase: doc references
-  repointed here (`0855b41`), and a fix so a divergence with one side
-  missing is recorded rather than dropped (`0501556`). Client `phase-3` is
-  the staging test tasks (`9dd19b1`); `phase-4` adds `f597957`.
+  api `phase-3` is three commits plus two from the rebase: "Points Phase 3
+  References at the Ownership Rework Doc", and "Records Divergences Where
+  One Side Is Missing" (a divergence with one side missing used to be
+  dropped, not recorded). Client `phase-3` is "Adds Staging Test Tasks for
+  the Phase 3 Read Cutover"; `phase-4` adds "Corrects the Retry-Safety Note
+  for Per-Account Import Dedup". Hashes are left out on purpose: every
+  rebase changes them.
 - Pre-rebase tips are kept as `backup/phase-{3,4}-pre-rebase`: tags in the
   api, branches in the client. Delete them once nothing needs comparing.
   Delete the client branches before the next `--update-refs` rebase, which
