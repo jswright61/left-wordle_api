@@ -74,7 +74,7 @@ class LeftWordleApi < Sinatra::Base
     set :session_token_ttl_days, (app_cfg["session_token_ttl_days"] || 365).to_i
     set :device_link_token_ttl_minutes, (app_cfg["device_link_token_ttl_minutes"] || 15).to_i
     set :webauthn_origin, app_cfg["webauthn_origin"]
-    # Phase 3 of docs/played_games_ownership_rework.md. Off means "read
+    # Phase 3 of docs/ownership_rework.md. Off means "read
     # played_games as before, but compute the games answer too and record any
     # disagreement"; on means "read games". Per-deployment, so staging can
     # run flipped while production is still collecting evidence, and the
@@ -671,7 +671,7 @@ class LeftWordleApi < Sinatra::Base
     end
 
     # Which id the client is told to converge on (Phase 3 of
-    # docs/played_games_ownership_rework.md). played_games is keyed by
+    # docs/ownership_rework.md). played_games is keyed by
     # device, so a user playing one puzzle on two devices has two rows and
     # two ids, and which one this returned depended on which device asked.
     # The games row is keyed (user_id, puzzle_num) and keeps the first id it

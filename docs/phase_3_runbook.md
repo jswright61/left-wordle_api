@@ -1,6 +1,6 @@
 # Phase 3 Runbook — Dual-Read Soak and the Read Cutover
 
-Companion to `played_games_ownership_rework.md` and `phase_2_follow_up.md`.
+Companion to `ownership_rework.md`.
 Phase 3 is the phase that can move someone's statistics, so its gate is
 production evidence rather than a passing test suite.
 
@@ -35,7 +35,7 @@ on. Those are separate events, potentially weeks apart.
 ## 2. Deploy (nothing user-visible)
 
 Phase 3 rides a normal release. Phase 2 must already be in production and
-soaked first — see `phase_2_follow_up.md`.
+soaked first — see `ownership_rework.md` §7.8.
 
 1. Merge `model-redesign/phase-3` into `develop`, then `develop` into
    `staging`, in both repos.

@@ -2,7 +2,7 @@
 
 Sequel.migration do
   up do
-    # Phase 3 of docs/played_games_ownership_rework.md. Every read that will
+    # Phase 3 of docs/ownership_rework.md. Every read that will
     # move to `games` is computed both ways and compared; when the two
     # disagree, the disagreement is recorded here rather than only in the
     # log. The soak's go/no-go question is "has this gone quiet for real

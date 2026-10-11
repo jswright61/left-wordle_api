@@ -60,7 +60,7 @@ device_link_token_ttl_minutes: 15
 # without it. Generate with: ruby -rsecurerandom -e "puts SecureRandom.hex(32)"
 session_secret: your_random_secret_here
 
-# --- Ownership rework, Phase 3 (docs/played_games_ownership_rework.md) ---
+# --- Ownership rework, Phase 3 (docs/ownership_rework.md) ---
 #
 # Where a logged-in user's history and stats-canonical row are read from.
 #

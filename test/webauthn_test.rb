@@ -934,7 +934,7 @@ class WebauthnTest < Minitest::Test
     DB[:played_games].where(client_device_id: device_id).delete if device_id
   end
 
-  # -- Phase 3 dual-read (docs/played_games_ownership_rework.md) ------------
+  # -- Phase 3 dual-read (docs/ownership_rework.md) -------------------------
   #
   # With the flag off every read is computed both ways and compared but the
   # played_games answer is still served; with it on the games answer is
