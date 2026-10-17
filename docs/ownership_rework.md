@@ -458,12 +458,16 @@ where duplicates genuinely collapse.
 
 - [x] `v1.0.5` in production (2026-10-11)
 - [x] `games:backfill` run on production, `games:verify` clean (2026-10-11)
-- [ ] Production has run long enough to accumulate games written by the
-      dual-write (planned: later in the week of 2026-10-12)
-- [ ] Zero `[games dual-write]` lines in production over that time:
-      `journalctl -u left-wordle-api --since "2026-10-11" | grep "games dual-write"`
-- [ ] `games:verify` still clean on production just before merging
-- [ ] `stats_adjustments` backlog pruned (§7.7 step 1)
+- [x] Production has run long enough to accumulate games written by the
+      dual-write (2026-10-17: 57 new games since the backfill)
+- [x] Zero `[games dual-write]` lines in production over that time
+      (2026-10-17). Run it as root or with `sudo` — `deploy` isn't in
+      `systemd-journal`, so it sees no unit logs and the count means nothing:
+      `sudo journalctl -u left-wordle-api --since "2026-10-11" | grep "games dual-write"`
+- [x] `games:verify` still clean on production just before merging
+      (2026-10-17: 1236 / 1236, 0 missing, 0 mismatches)
+- [x] `stats_adjustments` backlog pruned (2026-10-17: 0 rows — the
+      scheduler had already enforced retention since `v1.0.5`)
 
 ## 8. Open items
 
