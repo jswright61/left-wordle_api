@@ -99,7 +99,7 @@ page loads.
 | `missing_in_games` | Backfill never covered this row, or the dual-write failed for it | **Stop.** Re-run `games:backfill`, then investigate why the dual-write missed it |
 | `missing_in_played_games` | A `games` row with no counterpart — expected only after Phase 4 drops `user_id` | Investigate; unexpected now |
 | `game_status` | The two stores disagree about a result | **Stop.** This is the one that can move someone's numbers |
-| `guess_count` | Out-of-order arrival: `played_games` overwrites guesses unconditionally, `games` keeps the longest | Low. Affects only a histogram bucket, and `games` holds the more complete board |
+| `guess_count` | Before `v1.0.8`: the history import that races every signed-in `/game/complete` ran its stats step between the completion's `played_games` and `games` writes, so `games` was one guess short at that instant. The rows end up identical. Fixed by sending the board with the import (and keeping the longer board on import). Otherwise: out-of-order arrival, since `played_games` overwrites guesses unconditionally and `games` keeps the longest | **Investigate** if it appears after `v1.0.8`. With the flag on, the stats read `games`, so a short `games` board means a win counted a bucket low |
 | `guesses` | Same cause, seen through the history read | Low, same reasoning |
 | `date`, `mode` | A write path disagrees about metadata | Investigate; should not happen |
 

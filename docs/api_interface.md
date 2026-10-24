@@ -411,6 +411,44 @@ The array is ordered by `puzzle_number` ascending. An empty array is returned wh
 
 ---
 
+### POST /api/v2/history/import
+
+Signed in only (session cookie plus `X-CSRF-Token`). Records finished games
+the client already has, and applies statistics for each one that moves them.
+The client sends a single entry alongside every signed-in
+`/api/v1/game/complete`, and the whole history on a restore or import.
+
+**Request body**
+
+```json
+{
+  "history": [
+    {
+      "puzzle_num": 1952,
+      "date": "2026-10-22",
+      "mode": "regular",
+      "game_status": "WIN",
+      "completed_at": 1792684269000,
+      "game_id": "0199f1c2-…",
+      "guesses": [["slate", "02200"], ["flail", "22222"]]
+    }
+  ]
+}
+```
+
+Entry fields (other than `game_id`, documented under `/api/v1/game/start`):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `puzzle_num` | integer | Yes | Entries without a valid `puzzle_num` and `date` are skipped |
+| `date` | string | Yes | `YYYY-MM-DD` |
+| `mode` | string | No | `regular`, `hard` or `insane`; anything else is stored as `regular` |
+| `game_status` | string | No | `WIN` or `FAIL`. Null for an unknown result: the row is kept, but no statistics are applied |
+| `completed_at` | number or string | No | Epoch milliseconds or an ISO 8601 time |
+| `guesses` | array | No | The finished board as `[word, pattern]` pairs, or null. The client sends it only when it agrees with the result (a win in N has N pairs, a loss has 6). When the entry updates a game already recorded, **the longer board is kept**, so an entry without a board never shortens one. The board's length picks the guess-distribution bucket, which is why the entry carries it: this import and `/game/complete` race, and whichever arrives first applies the statistics |
+
+---
+
 ### OPTIONS *
 
 Handles CORS preflight for all routes.

@@ -1501,7 +1501,19 @@ class LeftWordleApi < Sinatra::Base
           puzzle_num: Sequel[:excluded][:puzzle_num],
           mode: Sequel[:excluded][:mode],
           game_status: Sequel.function(:coalesce, Sequel[:played_games][:game_status], Sequel[:excluded][:game_status]),
-          guesses: Sequel.function(:coalesce, Sequel[:played_games][:guesses], Sequel[:excluded][:guesses]),
+          # Longest board wins, the same rule as games. A signed-in
+          # completion sends this import alongside /game/complete, and either
+          # can arrive first; whichever applies the stats reads this row's
+          # guesses for the histogram bucket. Keeping the existing board here
+          # let an import that beat the completion leave the last progress
+          # save -- one guess short -- in place, and that win was counted a
+          # bucket low.
+          guesses: Sequel.case(
+            {Sequel.lit(
+              "jsonb_array_length(coalesce(excluded.guesses::jsonb, '[]'::jsonb)) > jsonb_array_length(coalesce(played_games.guesses::jsonb, '[]'::jsonb))"
+            ) => Sequel[:excluded][:guesses]},
+            Sequel[:played_games][:guesses]
+          ),
           completed_at: Sequel.function(:coalesce, Sequel[:played_games][:completed_at], Sequel[:excluded][:completed_at]),
           game_id: Sequel.function(:coalesce, Sequel[:played_games][:game_id], Sequel[:excluded][:game_id])
         },

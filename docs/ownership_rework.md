@@ -276,10 +276,31 @@ purge succeeded. On staging, opening an unplayed archive puzzle and
 finishing it ran both comparisons (history and stats canonical) with no
 divergence.
 
-**The soak (runbook §3) started 2026-10-17.** Check `rake games:divergences`
-on production every few days. A week of normal traffic is the floor before
-flipping `read_games_enabled`, staging first (runbook §4). Phase 3 is done
-only once the flag is on in production.
+**The soak (runbook §3) started 2026-10-17 and found a real bug.** On
+2026-10-24 `games:divergences` held 4 `stats_canonical` / `guess_count`
+rows, all wins with `games` one guess short of `played_games`, though the
+rows themselves were identical by then. Cause: every signed-in completion
+sends `/game/complete` and a history import of the same game at once, and
+both apply stats; the import carried no board. When the import's stats step
+ran between the completion's two writes, the comparison saw `games` one
+short. That is harmless with the flag off but would count the win a bucket
+low with it on.
+
+The other ordering was already live: when the import arrives *before* the
+completion, it marks the row WIN while both tables still hold the last
+progress save, so the win is bucketed one guess short with the flag off
+too, and the comparison can't see it because both sides agree. An audit of
+the `stats_adjustments` completion events (back to 2026-08-29, the oldest
+retained) found **130 of 836 wins counted exactly one bucket low**, across
+10 accounts, every week. Wins, losses and streaks were unaffected. The
+skewed distributions are not repaired (stats change only from live play or
+the player's own Adjust Stats).
+
+Fix, for `v1.0.8`: the client sends the board with the import, and the
+import keeps the longer board in `played_games` (as `games` already did),
+so whichever request lands first carries the full board. Then
+`games:clear_divergences` and restart the soak; the flag flip waits for a
+quiet week after that.
 
 **Branches:**
 
@@ -322,8 +343,10 @@ only once the flag is on in production.
    (§5).
 4. ✅ `phase-3` fast-forwarded into `develop` in both repos and released as
    `v1.0.7` (2026-10-17).
-5. **Now: the Phase 3 soak**, then the flag flip (`phase_3_runbook.md`
-   §3–4).
+5. **Now: ship the import-board fix (§5) as `v1.0.8`**, api first. Then
+   `bundle exec rake games:clear_divergences` on production and restart the
+   Phase 3 soak; a week of quiet after that, then the flag flip
+   (`phase_3_runbook.md` §3–4).
 6. **Hotfixes in the meantime** go on `develop` and ship as a normal
    release. `phase-4` needs rebasing onto `develop` anyway (§5):
    ```bash

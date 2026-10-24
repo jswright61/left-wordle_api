@@ -719,6 +719,56 @@ class WebauthnTest < Minitest::Test
     [device_a, device_b].compact.each { |d| DB[:played_games].where(client_device_id: d).delete }
   end
 
+  # A signed-in completion sends /game/complete and a history import of the
+  # same game at the same moment, and either can arrive first. When the
+  # import wins, it applies the stats -- reading the board from the row the
+  # last progress save left, one guess short unless the import replaces it.
+  def test_an_import_that_beats_the_completion_counts_the_full_board
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    date = Date.new(2026, 6, 9)
+    puzzle_num = LeftWordle::Game.puzzle_number_for(date)
+    board = [["crane", "01001"], ["stole", "11111"], ["toles", "22222"]]
+
+    post_json "/api/v1/game/progress",
+      {date: date.to_s, mode: "regular", guesses: board.first(2)},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    import_history!([{puzzle_num: puzzle_num, date: date.to_s, game_status: "WIN", guesses: board, device_id: device_id}],
+      body["csrf_token"])
+    post_json "/api/v1/game/complete",
+      {date: date.to_s, mode: "regular", game_status: "WIN", guesses: board},
+      {"HTTP_X_DEVICE_ID" => device_id}
+
+    assert_equal({"3" => 1}, get_profile!["statistics"]["guesses"].reject { |_, v| v.to_i.zero? },
+      "the win belongs in the bucket for its full board, not the progress save's")
+    assert_equal 3, PlayedGame.first(client_device_id: device_id, date: date).guesses.length
+    assert_equal 3, Game.first(user_id: body["user_id"], puzzle_num: puzzle_num).guesses.length
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
+  # The other order, and older clients whose import carries no board: an
+  # import never shortens a board already recorded.
+  def test_an_import_without_a_board_keeps_the_recorded_one
+    body = register_new_device!
+    device_id = SecureRandom.uuid
+    date = Date.new(2026, 6, 10)
+    puzzle_num = LeftWordle::Game.puzzle_number_for(date)
+    board = [["crane", "01001"], ["stole", "11111"], ["toles", "22222"]]
+
+    post_json "/api/v1/game/complete",
+      {date: date.to_s, mode: "regular", game_status: "WIN", guesses: board},
+      {"HTTP_X_DEVICE_ID" => device_id}
+    import_history!([{puzzle_num: puzzle_num, date: date.to_s, game_status: "WIN", device_id: device_id}],
+      body["csrf_token"])
+
+    assert_equal 3, PlayedGame.first(client_device_id: device_id, date: date).guesses.length
+    assert_equal 3, Game.first(user_id: body["user_id"], puzzle_num: puzzle_num).guesses.length
+    assert_equal({"3" => 1}, get_profile!["statistics"]["guesses"].reject { |_, v| v.to_i.zero? })
+  ensure
+    DB[:played_games].where(client_device_id: device_id).delete if device_id
+  end
+
   def test_history_import_attaches_a_previously_anonymous_row
     device_id = SecureRandom.uuid
     DB[:played_games].insert(
